@@ -1,0 +1,7 @@
+pipecat-ai==0.0.67
+pipecat-ai[google]
+pipecat-ai[local]
+python-dotenv
+loguru
+websockets
+firebase-admin

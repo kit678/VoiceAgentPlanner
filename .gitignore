@@ -1,0 +1,43 @@
+voice-assistant/node_modules/
+node_modules/
+
+# Environment variables file
+voice-assistant/.env
+.env
+
+# Firebase Admin SDK credentials
+voiceapp-37f2e-firebase-adminsdk-fbsvc-ac07eb2bce.json
+*.json
+
+# IDE and editor files
+.cursor/
+.vscode/
+.idea/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Logs
+*.log
+logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# API keys and credentials
+gen-lang-client-*.json
+*-firebase-adminsdk-*.json
