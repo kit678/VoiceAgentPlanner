@@ -1,9 +1,14 @@
 /**
  * Utility for managing global hotkey registration in Electron
+ * EPIPE Error Prevention: All logging operations disabled
  */
 const { globalShortcut } = require('electron');
 const config = require('../../config/app-config');
-const logger = require('./logger');
+// const logger = require('./logger'); // Disabled to prevent EPIPE errors
+
+// No-op logging to prevent EPIPE errors
+const safeLog = () => {};
+const safeError = () => {};
 
 /**
  * Register the activation hotkey for the voice assistant
@@ -13,16 +18,16 @@ const logger = require('./logger');
 function registerActivationHotkey(callback) {
   try {
     const hotkey = config.get('user.activationHotkey');
-    // Wrap the original callback to add a log before execution
+    // Wrap the original callback without logging to prevent EPIPE
     const wrappedCallback = () => {
-      logger.info(`[HotkeyManager] Hotkey "${hotkey}" pressed. Executing callback.`);
+      safeLog(`[HotkeyManager] Hotkey "${hotkey}" pressed. Executing callback.`);
       callback(); // Execute the original callback (e.g., toggleWindow)
     };
     globalShortcut.register(hotkey, wrappedCallback); // Pass the wrapped callback
-    logger.info(`Registered activation hotkey: ${hotkey}`);
+    safeLog(`Registered activation hotkey: ${hotkey}`);
     return true;
   } catch (error) {
-    logger.error('Failed to register activation hotkey', error);
+    safeError('Failed to register activation hotkey', error);
     // If the configured hotkey failed, we will not attempt a fallback to Alt+Space
     // as Alt+Space is problematic on Windows.
     // The function will return false, and an error will be logged.
@@ -35,7 +40,7 @@ function registerActivationHotkey(callback) {
  */
 function unregisterAll() {
   globalShortcut.unregisterAll();
-  logger.debug('Unregistered all hotkeys');
+  safeLog('Unregistered all hotkeys');
 }
 
 /**
@@ -62,17 +67,17 @@ function setActivationHotkey(hotkey, callback) {
     
     // If successful, save the new hotkey
     config.set('user.activationHotkey', hotkey);
-    logger.info(`Updated activation hotkey to: ${hotkey}`);
+    safeLog(`Updated activation hotkey to: ${hotkey}`);
     return true;
   } catch (error) {
-    logger.error(`Failed to set new hotkey ${hotkey}`, error);
+    safeError(`Failed to set new hotkey ${hotkey}`, error);
     
     // Reregister the previous hotkey
     const previousHotkey = config.get('user.activationHotkey');
     try {
       globalShortcut.register(previousHotkey, callback);
     } catch (reregisterError) {
-      logger.error('Failed to reregister previous hotkey', reregisterError);
+      safeError('Failed to reregister previous hotkey', reregisterError);
     }
     
     return false;

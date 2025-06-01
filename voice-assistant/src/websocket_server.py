@@ -205,28 +205,52 @@ class PipecatWebSocketBridge:
         logger.info("Text input handler connected to WebSocket bridge")
         
     async def client_handler(self, websocket, path):
-        """Handle WebSocket client connections"""
-        await self.register_client(websocket)
+        """Handle WebSocket client connections with improved error handling"""
+        client_id = id(websocket)
+        logger.info(f"WebSocket client {client_id} connected from {websocket.remote_address}")
+        
         try:
+            # Register the client first
+            await self.register_client(websocket)
+            
+            # Handle incoming messages
             async for message in websocket:
                 await self.handle_client_message(websocket, message)
-        except websockets.exceptions.ConnectionClosed:
-            pass
-        finally:
-            await self.unregister_client(websocket)
             
+        except websockets.exceptions.ConnectionClosed:
+            logger.info(f"WebSocket client {client_id} disconnected normally")
+        except Exception as e:
+            logger.error(f"Error handling WebSocket client {client_id}: {e}")
+        finally:
+            # Unregister the client
+            await self.unregister_client(websocket)
+            logger.info(f"WebSocket client {client_id} cleaned up")
+
     async def start_server(self):
         """Start the WebSocket server"""
         logger.info(f"Starting WebSocket server on {self.host}:{self.port}")
-        return await websockets.serve(
-            self.client_handler,
-            self.host,
-            self.port
-        )
+        try:
+            server = await websockets.serve(
+                self.client_handler,
+                self.host,
+                self.port
+            )
+            logger.info(f"WebSocket server successfully bound to {self.host}:{self.port}")
+            return server
+        except Exception as e:
+            logger.error(f"Failed to start WebSocket server: {e}")
+            raise
 
 # Global bridge instance
 bridge = PipecatWebSocketBridge()
 
 async def start_websocket_bridge():
     """Start the WebSocket bridge server"""
-    return await bridge.start_server()
+    logger.info("Attempting to start WebSocket bridge...")
+    try:
+        server = await bridge.start_server()
+        logger.info("WebSocket server is now serving on localhost:8765")
+        return server
+    except Exception as e:
+        logger.error(f"Failed to start WebSocket bridge: {e}")
+        raise

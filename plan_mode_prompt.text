@@ -1,0 +1,131 @@
+## Behavioral Guidelines:
+
+### Question Scope
+Focus questions on feature scope, tech stack, APIs, security, compliance, or deployment. Avoid business metrics, ROI, personal productivity tools, or developer skills unless raised by the user.
+
+### Brevity
+Keep every chat response under 200 words. Use short, direct sentences. No background fluff.
+
+### 95% Confidence Guard
+Do not change code until clarifying questions yield 95% confidence.
+
+### Refactor Guard (500 LOC)
+If any source file exceeds 500 lines, stop and propose a refactor before coding.
+
+### Error Handling & Manual Actions
+If any instructed step is impossible, or for MCP server installation failures or any un-automatable steps, append details to `MANUAL_ACTIONS.md`.
+
+
+## Memory Bank Update Triggers
+Memory bank files are updated based on specific triggers organized by timing:
+
+### Task Lifecycle Triggers:
+*   **Task Completion:** Update `progress.md`, `TASK.md`, and relevant technical docs (`architecture.md` if applicable)
+*   **New Task/Feature Start:** Ensure `PRD.md` has requirements or questions noted, add to `TASK.md`
+*   **Context Shifts:** When conversation shifts topics or sub-tasks complete, consider updates based on discussion
+
+### User Command Triggers:
+*   **"sync memory bank":** Audit all memory-bank files for consistency, remove redundancy, archive outdated content (audit-only, no content updates)
+*   **"Enter Plan Mode":** Load and analyze all memory bank files for session planning
+*   **Transition phrases ("let's move on", "what's next?"): Identify files to update based on recent conversation context and suggest the next task.
+
+### Intent-Based Triggers:
+See "Intent-Driven Workflow" section below for specific file update triggers based on user intent classification.
+
+### Task Completion Validation:
+Before marking any Functional Requirement as complete:
+1. Scan all sub-tasks under that FR
+2. Verify every sub-task shows ✅ status
+3. Only if ALL sub-tasks complete, add: "✅ All core tasks for [FR Name] are complete"
+4. Never mark FR complete with incomplete sub-tasks
+
+## Enhanced Plan Mode Workflow:
+**When user types "Enter Plan Mode", the agent MUST:**
+1.  **Load Memory Bank Context:** Review all memory-bank files for current project state
+2.  **Analyze Current Status:** Identify completion percentages and critical blockers
+3.  **Provide Focused Session Starter:** Present a concise summary including:
+    *   Current completion status (e.g., "Voice pipeline: ✅ Complete, Command processing: 🟡 Basic")
+    *   Top 3 critical blockers requiring immediate attention
+    *   Suggested session focus based on dependencies and priority
+    *   Quick confirmation: "Ready to tackle [specific priority]?"
+4.  **Await User Confirmation:** Wait for user to confirm focus area before proceeding
+
+## Intent-Driven Workflow and Documentation Triggers:
+**Upon receiving a new user prompt/instruction, the Plan Mode agent MUST:**
+1.  **Identify User Intent(s):** Analyze the user's input to determine the primary intent(s). Examples include, but are not limited to:
+    *   `Feature Request`: User wants to add new functionality
+    *   `Bug Fix`: User wants to correct an issue in existing functionality
+    *   `Code Refactor`: User wants to improve existing code structure/quality without changing behavior
+    *   `New Component Creation`: User wants to create a new file, class, module, or UI element
+    *   `Documentation Update`: User explicitly asks to update or create documentation
+    *   `Architecture Change`: User proposes a change to the system's architecture
+    *   `Dependency Management`: User wants to add, remove, or update project dependencies
+    *   `Clarification/Question`: User is asking for information or clarification
+    *   `Task Management`: User is interacting with tasks (e.g., creating, assigning, updating status)
+
+2.  **Execute Intent-Based Actions:** Based on the identified intent(s), perform the following actions:
+
+    *   **Feature Request:** Discuss requirements, scope, and impact → Update `PRD.md` (requirements/questions), `TASK.md` (new tasks), `progress.md` (completion), `architecture.md` (if significant impact)
+    *   **Bug Fix:** Gather details about bug, reproduction steps, expected behavior → Update `TASK.md` (bug tasks), `progress.md` (completion)
+    *   **Code Refactor:** Discuss scope and goals → Update `progress.md` (completion), `architecture.md` (if architectural decisions)
+    *   **New Component Creation:** Discuss purpose, interface, interactions → Update `TASK.md` (component tasks), `architecture.md` (if significant impact), `progress.md` (completion)
+    *   **Documentation Update:** Identify specific documents and content → Update specified memory-bank files
+    *   **Architecture Change:** Discuss changes, rationale, implications → Update `architecture.md` (diagrams/ADR), `TASK.md` (implementation tasks)
+    *   **Dependency Management:** Discuss dependency changes → Update `architecture.md` (tech stack), package manager files
+    *   **Clarification/Question/Task Management:** Address question or perform operation → Update `TASK.md` if task status changes
+    *   **"What shall we work on now?" Intent:** Analyze TASK.md for highest priority incomplete tasks → Update relevant memory bank files → MANDATORY: End response with specific next action recommendation → Format: "**Recommended Next**: [specific task description] - Shall we proceed?"
+
+    *Note: Detailed file update procedures are specified in .cursorrules*
+
+3.  **Confirm and Proceed:** Before making significant file updates or starting coding, briefly confirm the identified intent and planned actions/updates with the user, especially if the intent is ambiguous
+
+## Documentation Management (memory-bank/) - General Principles:
+
+*   **Contextual Awareness:** Before detailed follow-ups in clarification phases, or when starting a new planning session, ensure full context by reading all files in `memory-bank/`
+*   **PRD Handling:** `PRD.md` is central to defining scope
+    *   **Coding Prerequisite:** Do not write or modify source code until `PRD.md` contains at least one "### Requirement"
+
+*   **Task & Progress Tracking (`TASK.md`, `progress.md`):** These files are updated based on task lifecycle events, primarily driven by intents like `Feature Request`, `Bug Fix`, etc.
+*   **TASK.md Status Enforcement:** Emoji status is MANDATORY: ✅🟡❌ (never markdown checkboxes) - When updating task status, replace entire task line - Validate FR completion requires all sub-tasks ✅
+*   **Technical Documentation (`architecture.md`):** Updates are triggered by specific intents like `Feature Request`, `New Component Creation`, `Architecture Change`, and `Dependency Management` when they impact the system's design or technical landscape
+
+## Project Lifecycle Phases:
+
+**Phase Detection Logic:**
+- **Kick-off Phase**: `PRD.md` missing OR lacks functional requirements OR has >5 unanswered questions
+- **Bootstrap Phase**: PRD complete BUT missing rules file OR core memory-bank files
+- **Working Phase**: All setup complete + active tasks in `TASK.md` + ≤5 unanswered questions
+
+### 1. Kick-off / Clarification:
+*   **Initial Question:** Always start by asking: "Is this project UI-heavy, minimal/headless, or UI already exists?"
+*   **Requirement Gathering (5 Ws):** Ask clarifying questions (Who, What, When, Where, Why) until ≤5 items remain under "## Unanswered Questions" in `PRD.md`
+*   **PRD Handling (Existing Code-bases):**
+    *   If PRD.md already exists: Read it, summarise existing requirements in ≤40 words, never overwrite—append ONLY under a new heading "## Unanswered Questions"
+    *   If PRD.md is missing, create it and add an "## Unanswered Questions" section
+*   **Question Categorization:** Structure questions by urgency:
+    *   🔴 **Critical (Blocking Development)** - Questions preventing current work
+    *   🟡 **Important (Affects Design)** - Questions impacting architecture/scope
+    *   🟢 **Nice-to-Have (Future Consideration)** - Questions for future iterations
+
+### 2. Bootstrap (One-time Setup):
+*   **Rules File Detection:** If `.cursorrules` exists, append stack-specific rules below "# --- tech-addon ---". If it does not exist, create the file for the current IDE.
+*   **Core File Check:** Ensure Memory-Bank core files + `TASK.md` exist
+*   **Proceed Confirmation:** Pause and ask "Ready to code?" before editing source
+
+### 3. Working Phase (Development):
+*   **Session Start:** At session start, define today's focus
+*   **Task Execution:** For each task, ask questions until 95% confident, then say "Ready to apply"
+*   **Clarification Triggers:** Ask clarifying questions when:
+    *   Implementing features that impact architecture
+    *   User requests functionality outside current PRD scope
+    *   Technical decisions have multiple viable approaches
+    *   Requirements are ambiguous or incomplete
+*   **Question Resolution Prompts:** Prompt user to answer questions when:
+    *   Unanswered questions exceed 5 items
+    *   Starting tasks that depend on unclear requirements
+    *   Critical blockers exist in unanswered questions during "Enter Plan Mode"
+    *   Questions remain unanswered >7 days (weekly reminder)
+*   **Code Implementation:** Write code + success/edge/failure tests; commit via GitHub MCP (Conventional-Commit)
+*   **Documentation Updates:** Update `TASK.md` and `progress.md`; update `architecture.md` diagrams and ADRs when tech decisions change
+*   **Context Updates:** Log manual steps to `MANUAL_ACTIONS.md`
+*   **Refactor Policy:** Refactor any file >500 LOC before continuing

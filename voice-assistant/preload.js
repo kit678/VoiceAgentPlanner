@@ -12,22 +12,30 @@ contextBridge.exposeInMainWorld('api', {
   // Result listeners
   onStartListening: (callback) => ipcRenderer.on('start-listening', callback),
   onStopListening: (callback) => ipcRenderer.on('stop-listening', callback),
-  // onSpeechResult now receives { transcript, isFinal }
   onSpeechResult: (callback) => ipcRenderer.on('speech-result', (event, data) => callback(data)),
-  onValidationResult: (callback) => ipcRenderer.on('validation-result', (event, text) => callback(text)),
-  onResponseReady: (callback) => ipcRenderer.on('response-ready', (event, text) => callback(text)),
+  onShowError: (callback) => ipcRenderer.on('show-error', (event, message) => callback(message)),
   onDisplayResponseText: (callback) => ipcRenderer.on('display-response-text', (event, text) => callback(text)),
   onPlayResponseAudio: (callback) => ipcRenderer.on('play-response-audio', (event, data) => callback(data)),
-  
-  // Error handling
-  onShowError: (callback) => ipcRenderer.on('show-error', (event, message) => callback(message)),
-  showErrorInMain: (message) => ipcRenderer.send('show-error-in-main', message),
+  onBackendTrulyReady: (callback) => ipcRenderer.on('backend-truly-ready', callback), // Added for WebSocket sync
 
-  // Microphone / Audio Input Selection
+  // Microphone selection
   setAudioInputDevice: (deviceId) => ipcRenderer.send('set-audio-input-device', deviceId),
   // For renderer to store/retrieve preferences directly using electron-store via main process
   getStoredAudioInputDevice: () => ipcRenderer.invoke('get-stored-audio-input-device'),
   storeAudioInputDevice: (deviceId) => ipcRenderer.send('store-audio-input-device', deviceId),
   // For TTS
-  synthesizeSpeech: (text) => ipcRenderer.invoke('synthesize-speech', text)
-}); 
+  synthesizeSpeech: (text) => ipcRenderer.invoke('synthesize-speech', text),
+  
+  // Google OAuth Authentication
+  startGoogleAuth: () => ipcRenderer.invoke('start-google-auth'),
+  completeGoogleAuth: (authCode) => ipcRenderer.invoke('complete-google-auth', authCode),
+  getAuthStatus: () => ipcRenderer.invoke('get-auth-status'),
+  sendAuthCompleted: (success) => ipcRenderer.send('auth-completed', success),
+  onAuthCompleted: (callback) => ipcRenderer.on('auth-completed', (event, success) => callback(success)),
+  
+  // External URL opening
+  openExternal: (url) => ipcRenderer.invoke('open-external', url),
+  
+  // OAuth callback handling
+  onOAuthCallback: (callback) => ipcRenderer.on('oauth-callback', (event, result) => callback(result))
+});

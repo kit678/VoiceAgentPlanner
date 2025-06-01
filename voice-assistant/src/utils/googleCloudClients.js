@@ -1,35 +1,37 @@
+/**
+ * Google Cloud client initialization utility
+ * EPIPE Error Prevention: Console operations disabled
+ */
 const { SpeechClient } = require('@google-cloud/speech');
 const { TextToSpeechClient } = require('@google-cloud/text-to-speech');
 
-let speechClient;
-let textToSpeechClient;
+// No-op logging to prevent EPIPE errors
+const safeLog = () => {};
+const safeError = () => {};
 
-if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-  console.error(
-    'GOOGLE_APPLICATION_CREDENTIALS environment variable is not set. ' +
-    'Google Cloud clients will not be initialized. ' +
-    'Please set this variable to the path of your service account key file.'
-  );
-  // In a real application, you might throw an error or handle this more gracefully
-} else {
+function initializeGoogleSpeechClient() {
   try {
-    speechClient = new SpeechClient();
-    console.log('Google Cloud SpeechClient initialized successfully.');
+    const speechClient = new SpeechClient();
+    safeLog('Google Cloud SpeechClient initialized successfully.');
+    return speechClient;
   } catch (error) {
-    console.error('Failed to initialize Google Cloud SpeechClient:', error);
-    // Handle or throw error as appropriate for your application
+    safeError('Failed to initialize Google Cloud SpeechClient:', error);
+    return null;
   }
+}
 
+function initializeGoogleTextToSpeechClient() {
   try {
-    textToSpeechClient = new TextToSpeechClient();
-    console.log('Google Cloud TextToSpeechClient initialized successfully.');
+    const ttsClient = new TextToSpeechClient();
+    safeLog('Google Cloud TextToSpeechClient initialized successfully.');
+    return ttsClient;
   } catch (error) {
-    console.error('Failed to initialize Google Cloud TextToSpeechClient:', error);
-    // Handle or throw error as appropriate for your application
+    safeError('Failed to initialize Google Cloud TextToSpeechClient:', error);
+    return null;
   }
 }
 
 module.exports = {
-  speechClient,
-  textToSpeechClient,
+  initializeGoogleSpeechClient,
+  initializeGoogleTextToSpeechClient
 }; 

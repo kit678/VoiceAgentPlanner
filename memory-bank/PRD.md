@@ -57,7 +57,7 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
     * **FR4.1**: Agent shall integrate with **Trello** (via Zapier) for task management (create, update, mark complete).
     * **FR4.2**: Agent shall integrate with **Notion** (via Zapier) for note-taking and information storage.
     * **FR4.3**: Agent shall integrate with **Google Calendar** (via Zapier) for setting events, deadlines, and reminders.
-* **FR6: Command Processing & Intent Classification**
+* [x] **FR6: Command Processing & Intent Classification**
     * **FR6.1**: Agent shall classify voice commands into actionable intents. This will be handled by an `IntentParser` module, ideally refactored as a Pipecat `FrameProcessor`.
     * **FR6.2**: Agent shall extract parameters from natural language commands (dates, times, task descriptions, priority levels).
     * **FR6.3**: Agent shall validate extracted parameters and request clarification for incomplete commands.
@@ -75,7 +75,7 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
     * **FR8.3**: Agent shall support focus session timers with break reminders.
     * **FR8.4**: Agent shall track time spent on specific tasks or projects.
     * **FR8.5**: Agent shall integrate timer data with task completion tracking.
-* **FR9: Persistent Storage & Data Management**
+- [x] FR9: Persistent Storage System
     * **FR9.1**: Agent shall store internal state (e.g., conversation history, assistant-specific goals/notes) and metadata (references to externally managed tasks/events like those in Google Tasks/Calendar via Zapier) in Firebase Firestore with real-time sync. Primary data for external services will reside in those services.
     * **FR9.2**: Agent shall maintain conversation history with search capabilities.
     * **FR9.3**: Agent shall implement data versioning for goals and task modifications.
@@ -116,13 +116,21 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
 
 **5. Technical Stack & Key Integrations (Summary)**
 
+- **Technical Stack**: Python (backend), Electron (frontend), Firebase (database), Pipecat-AI (pipeline orchestration), Gemini API (LLM).
+
 * **Voice Processing**: Gemini 2.0 Flash Live API (handles STT, LLM, and TTS in one service - free tier)
-* **Backend Orchestration & Logic**: Pipecat framework, orchestrating services including Gemini Multimodal Live (for STT, core LLM, TTS), custom intent parsing, and command processing modules. Pipecat Flows may be utilized for managing structured conversational interactions.
+- **Command Processing**: The system must accurately parse natural language commands and execute corresponding actions using Pipecat's function calling capabilities (e.g., "create a task," "set a reminder").
 * **Cloud Storage for Memory**: Firebase Firestore
-* **Integrations Layer**: Zapier
-    * **Task Management**: Trello
-    * **Note-Taking**: Notion
-    * **Calendar/Reminders**: Google Calendar
+* **Integrations Layer**: Direct API Integration (replacing Zapier)
+    * **Primary Google Workspace Integration** (Single Sign-On):
+        * **Task Management**: Google Tasks/Kanbanchi
+        * **Calendar/Reminders**: Google Calendar
+        * **Note-Taking**: Google Keep/Docs
+        * **File Storage**: Google Drive
+    * **Future Alternative Providers** (User-Selectable):
+        * **Task Management**: JIRA, Todoist
+        * **Note-Taking**: Notion
+        * **Communication**: Slack
 * **Platform - Initial Focus**: Windows-first desktop application using Electron
 * **Framework Rationale**:
     - Electron enables rapid MVP development using web technologies (HTML/CSS/JS)
@@ -177,6 +185,7 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
 
 ### Technical Implementation
 - [ ] What's our strategy for handling prolonged Zapier API outages?
+- **Voice Input Validation**: How will the system handle ambiguous or unclear voice commands? (Addressed by Pipecat's function calling and schema validation)
 - [ ] How will we implement offline capabilities for core functionality?
 - [ ] What performance monitoring will we implement for Electron main process?
 - [ ] Backup plan if Google Speech-to-Text free tier limits are exceeded?

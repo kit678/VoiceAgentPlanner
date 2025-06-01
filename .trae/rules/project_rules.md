@@ -9,7 +9,7 @@ Keep these files fresh and commit them with related code:
 *   PRD.md – Product requirements with project overview and functional requirements FR1-FR12
 *   architecture.md – Technical design, technology stack, and ADR decisions
 *   TASK.md – Backlog ▸ In-Progress ▸ Done checklist with emoji status legend
-*   activeContext.md – Today's focus (overwrite each session start)
+
 *   progress.md – "YYYY-MM-DD – ✅ summary" per completed task
 *   MANUAL_ACTIONS.md – Steps requiring manual intervention
 
@@ -24,11 +24,7 @@ Prevent redundancy and staleness:
 ### Unit-test policy (all languages)
 Every new function/class gets success, edge and failure tests under /tests mirroring source path.
 
-### Progress.md format rule
-Each entry in memory-bank/progress.md MUST follow:
-YYYY-MM-DD – ✅ <past-tense summary of completed work>
-Example:
-2025-05-12 – ✅ Resolved electron-store startup crash and hotkey binding
+
 
 ### On-demand tech-rule sync
 If the user types "sync tech rules" or "generate stack rules",
@@ -51,54 +47,51 @@ Procedure:
     *   Append a new rule for Fastify
 5.  Show the diff for approval and commit via the GitHub MCP with a Conventional-Commit message
 
-## Memory Bank File Update Directives
+## Memory Bank File Update Procedures
 
-### When PRD.md update is triggered:
-*   Update project overview section to reflect current scope and architecture
+### PRD.md Updates:
+*   Update project overview to reflect current scope and architecture
 *   Add/update functional requirements with FR-XXX format and clear acceptance criteria
-*   Append new questions under "## Unanswered Questions" section, never overwrite existing content
-*   Ensure alignment between project overview and detailed requirements
-*   Maintain structured sections with numbered requirements
+*   Append questions under "## Unanswered Questions" (never overwrite existing)
+*   Ensure alignment between overview and detailed requirements
 
-### When architecture.md update is triggered:
-*   Update technology stack section with exact versions from package manifests
-*   Add new ADR entries with format: "YYYY-MM-DD – Decision Title – Brief description"
-*   Include structured ADR sections: Decision, Rationale, and impact
-*   Update system diagrams to reflect current implementation
+### architecture.md Updates:
+*   Update technology stack with exact versions from package manifests
+*   Add ADR entries: "YYYY-MM-DD – Decision Title – Brief description"
+*   Include structured ADR sections: Decision, Rationale, Impact
+*   Update system diagrams to match current implementation
 *   Document new services, APIs, or major architectural changes
-*   Ensure diagrams match actual codebase structure
 
-### When TASK.md update is triggered:
-*   Move tasks between sections using emoji status indicators (🔴🟠🟢 for priority, ✅🟡❌ for status)
-*   Add new tasks with clear, actionable descriptions and acceptance criteria
+### TASK.md Updates:
+*   NEVER use markdown checkboxes `[x]` or `[ ]` - ALWAYS use emoji status: ✅🟡❌
+*   Move tasks between sections using emoji indicators (🔴🟠🟢 priority, ✅🟡❌ status)
+*   Before marking any Functional Requirement (FR) as complete:
+    1. Verify ALL sub-tasks under that FR are marked ✅
+    2. Only then add completion statement
+*   When updating task status, replace the entire line with new emoji
+*   Add tasks with clear descriptions and acceptance criteria
 *   Include dependencies and blocking relationships
-*   Archive completed tasks older than 14 days to maintain readability
-*   Maintain clear priority categorization and status legend
+*   Archive completed tasks older than 14 days
 
-### When MANUAL_ACTIONS.md update is triggered:
-*   Add new entries with format: "YYYY-MM-DD - [CATEGORY] Description - Status: Pending"
-*   Categories: API_SETUP, ENV_CONFIG, EXTERNAL_SERVICE, PERMISSIONS, OTHER
-*   Mark completed actions as "Status: Completed - [completion date]"
-*   Include specific instructions and required credentials/access
-*   Archive completed actions older than 30 days
-
-### When activeContext.md update is triggered:
-*   Overwrite entire content with current session focus
-*   Include: current task, immediate goals, and context switches
-*   Keep under 100 words, bullet-point format preferred
-*   Reference relevant TASK.md items and recent progress
-
-### When progress.md update is triggered:
-*   Add new entry with format: "YYYY-MM-DD – ✅ <past-tense summary>"
+### progress.md Updates:
+*   Add entries: "YYYY-MM-DD – ✅ <past-tense summary>"
 *   Include specific accomplishments, not just task completion
 *   Reference relevant code changes, features, or fixes
 *   Maintain reverse chronological order (newest first)
 
-### When TASK.md update is triggered:
-*   Move tasks between sections: Backlog ▸ In-Progress ▸ Done
-*   Add new tasks with clear, actionable descriptions
-*   Include acceptance criteria and dependencies
-*   Archive Done tasks older than 14 days to maintain readability
+### MANUAL_ACTIONS.md Updates:
+*   Add entries: "YYYY-MM-DD - [CATEGORY] Description - Status: Pending"
+*   Categories: API_SETUP, ENV_CONFIG, EXTERNAL_SERVICE, PERMISSIONS, OTHER
+*   Mark completed: "Status: Completed - [date]"
+*   Archive completed actions older than 30 days
+
+### "What shall we work on now?" Response Pattern:
+*   Load and analyze TASK.md current state
+*   Update memory bank files as needed
+*   MUST conclude with: "**Next Action**: [specific task] - Ready to proceed?"
+*   Wait for user confirmation before starting work
+
+
 
 ## Tech Addons
 
@@ -124,6 +117,6 @@ When writing JavaScript:
 When executing terminal commands for this project:
 
 *   Always activate the conda environment "voiceapp" before running any commands
-*   Use format: `conda activate voiceapp && [your_command]` for single commands
-*   For multi-step operations, activate once at the beginning of the session
+*   Use format: `conda run -n voiceapp [your_command]` for single commands
+*   For multi-step operations, use `conda run -n voiceapp` for each command
 *   This ensures all Python dependencies and project-specific libraries are available

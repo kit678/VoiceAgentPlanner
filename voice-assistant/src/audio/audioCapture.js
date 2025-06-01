@@ -1,3 +1,12 @@
+/**
+ * Audio capture functionality
+ * EPIPE Error Prevention: Console operations disabled
+ */
+
+// No-op logging to prevent EPIPE errors
+const safeLog = () => {};
+const safeError = () => {};
+
 const MicModule = require('node-mic');
 // console.log('[AudioCapture] Inspecting MicModule:', MicModule); // Removed inspection log
 const { PassThrough } = require('stream');
@@ -5,6 +14,7 @@ const { PassThrough } = require('stream');
 let micInstance = null;
 let micInputStream = null;
 let audioStreamRelay = null; // A PassThrough stream to relay audio data
+let isRecording = false;
 
 const defaultMicOptions = {
   rate: '16000', // Sample rate (Hz)
@@ -15,42 +25,35 @@ const defaultMicOptions = {
   fileType: 'raw', // Output format
 };
 
-function startRecording(captureOptions = {}) { // captureOptions might contain { device: 'deviceId' }
-  if (micInstance) {
-    console.log('[AudioCapture] Recording is already in progress.');
-    return audioStreamRelay;
+function startRecording(captureOptions = {}) {
+  if (isRecording) {
+    safeLog('[AudioCapture] Recording is already in progress.');
+    return null;
   }
 
   let actualMicOptions = { ...defaultMicOptions };
   
-  // Handle deviceId carefully
-  // 'default' and 'communications' are special device IDs from enumerateDevices.
-  // Other long strings are actual device IDs.
-  // node-mic expects either a system-specific name or to be omitted for system default.
-  if (captureOptions.device && typeof captureOptions.device === 'string' && 
-      captureOptions.device !== 'default' && captureOptions.device !== 'communications') {
-    // If we have a specific deviceId (that is not 'default' or 'communications'), pass it along.
-    // This relies on node-mic/SoX/arecord being able to use this ID directly, which is uncertain.
+  // Handle device selection for microphone
+  if (captureOptions.device && captureOptions.device !== 'default') {
+    // If user provided a specific device ID, use it
     actualMicOptions.device = captureOptions.device;
-    console.log(`[AudioCapture] Attempting to use specific microphone device ID: ${actualMicOptions.device}`);
-  } else if (captureOptions.device) {
-    // If it's 'default' or 'communications', or any other non-specific case, we explicitly don't set the device, 
-    // letting node-mic use the system default microphone.
-    console.log(`[AudioCapture] Received device hint '${captureOptions.device}'. Using system default microphone.`);
-    // actualMicOptions.device remains unset (or default from defaultMicOptions, which is commented out)
+    safeLog(`[AudioCapture] Attempting to use specific microphone device ID: ${actualMicOptions.device}`);
+  } else if (captureOptions.device === 'default') {
+    // If user explicitly chose "default", use null (system default)
+    actualMicOptions.device = null;
+    safeLog(`[AudioCapture] Received device hint '${captureOptions.device}'. Using system default microphone.`);
   } else {
-    console.log('[AudioCapture] No specific device provided. Using system default microphone.');
-    // actualMicOptions.device remains unset
+    // If no device provided, use system default
+    safeLog('[AudioCapture] No specific device provided. Using system default microphone.');
   }
 
-  console.log('[AudioCapture] Final NodeMic options:', actualMicOptions);
+  safeLog('[AudioCapture] Final NodeMic options:', actualMicOptions);
 
   try {
-    micInstance = new MicModule.default(actualMicOptions);
+    micInstance = MicModule(actualMicOptions);
   } catch (err) {
-    console.error('[AudioCapture] Error initializing Mic instance:', err);
-    // Propagate this error or handle it, maybe return null or throw
-    return null; // Indicate failure to start
+    safeError('[AudioCapture] Error initializing Mic instance:', err);
+    return null;
   }
   
   micInputStream = micInstance.getAudioStream();
@@ -59,44 +62,43 @@ function startRecording(captureOptions = {}) { // captureOptions might contain {
   micInputStream.pipe(audioStreamRelay);
 
   micInputStream.on('data', (data) => {
-    // console.log('Audio data received:', data.length);
-    // Data is already being piped to audioStreamRelay
+    // Silently handle audio data
   });
 
   micInputStream.on('error', (error) => {
-    console.error('[AudioCapture] Error from microphone stream:', error);
-    stopRecording(); // Clean up on error
-    if (audioStreamRelay) {
-        audioStreamRelay.emit('error', error); // Propagate error to relay listeners if they exist
-    }
+    safeError('[AudioCapture] Error from microphone stream:', error);
   });
 
   micInputStream.on('silence', () => {
-    console.log('Silence detected from microphone.');
-    // Handle silence if needed, e.g., auto-stop recording
+    safeLog('Silence detected from microphone.');
   });
 
   micInputStream.on('processExitComplete', () => {
-    console.log('Microphone process exited.');
+    safeLog('Microphone process exited.');
   });
   
   micInstance.start();
-  console.log('Audio recording started.');
-  return audioStreamRelay; // Return the relay stream for consumers
+  safeLog('Audio recording started.');
+  isRecording = true;
+
+  return audioStreamRelay;
 }
 
 function stopRecording() {
-  if (micInstance) {
+  if (micInstance && isRecording) {
     micInstance.stop();
-    console.log('Audio recording stopped.');
+    safeLog('Audio recording stopped.');
+    isRecording = false;
     micInstance = null;
     micInputStream = null; 
     if (audioStreamRelay) {
       audioStreamRelay.end(); // Signal no more data will be written
       audioStreamRelay = null;
     }
+    return true;
   } else {
-    console.log('Recording is not in progress.');
+    safeLog('Recording is not in progress.');
+    return false;
   }
 }
 

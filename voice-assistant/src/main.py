@@ -1,9 +1,5 @@
 import asyncio
-from llm.pipeline import VoicePipeline
-
-async def main():
-    pipeline = VoicePipeline()
-    await pipeline.start()
+from pipecat_pipeline_functions import main as pipeline_main
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(pipeline_main())

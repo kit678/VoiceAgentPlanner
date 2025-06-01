@@ -1,7 +1,6 @@
 import asyncio
 import sys
 import os
-from typing import AsyncGenerator
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -13,7 +12,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 from pipecat.observers.loggers.transcription_log_observer import TranscriptionLogObserver
 
-# Import Gemini Multimodal Live service (replaces both DeepSeek LLM + Google TTS)
+# Import Gemini Multimodal Live service
 from pipecat.services.gemini_multimodal_live.gemini import (
     GeminiMultimodalLiveLLMService,
     InputParams,
@@ -24,8 +23,9 @@ from pipecat.transcriptions.language import Language
 # Import WebSocket bridge
 from websocket_server import bridge, start_websocket_bridge
 
-# Import Frame Processors
-from llm.intent_parser_processor import IntentParserFrameProcessor, IntentFrame
+# Import Frame Processors - using LLM-based intent parser
+from llm.llm_intent_parser_processor import LLMIntentParserFrameProcessor
+from llm.intent_parser_processor import IntentFrame  # Still need IntentFrame
 from llm.command_processor_processor import CommandProcessorFrameProcessor
 from firebase.firestore_service import FirestoreService
 
@@ -47,17 +47,13 @@ class WebSocketBridgeProcessor(FrameProcessor):
         # Forward relevant frames to WebSocket clients
         if isinstance(frame, TextFrame):
             if direction == FrameDirection.DOWNSTREAM:
-                # This could be a transcription from STT (Gemini) or other text sources.
-                # If it's a direct transcription meant for UI display before intent parsing:
-                # Consider if this should still be sent, or if UI only gets final responses.
-                # For now, let's assume transcriptions are for intent parsing first.
-                # await self.bridge.on_transcription(frame.text, is_final=True)
-                pass # TextFrames from STT will go to IntentParserFrameProcessor
+                # TextFrames from STT will go to LLMIntentParserFrameProcessor
+                pass
             elif direction == FrameDirection.UPSTREAM:
-                # This is a response from LLM (Gemini) or CommandProcessorFrameProcessor
+                # This is a response from LLM or CommandProcessorFrameProcessor
                 await self.bridge.on_response_text(frame.text)
         elif isinstance(frame, IntentFrame) and direction == FrameDirection.DOWNSTREAM:
-            # IntentFrames are handled by CommandProcessorFrameProcessor, not directly by UI bridge
+            # IntentFrames are handled by CommandProcessorFrameProcessor
             pass
         
         # Always pass the frame through the pipeline
@@ -67,12 +63,8 @@ class WebSocketBridgeProcessor(FrameProcessor):
         """Handles text commands sent from the UI via WebSocket, pushing them into the pipeline."""
         logger.debug(f"WebSocketBridgeProcessor received text from UI: {user_text}")
         # Push the user's text as a TextFrame into the pipeline for intent parsing
-        # The direction is DOWNSTREAM as it's initiating a new processing sequence
         await self.push_frame(TextFrame(user_text), FrameDirection.DOWNSTREAM)
         logger.debug(f"Pushed TextFrame: '{user_text}' into pipeline from UI.")
-
-    # The set_command_processor method is no longer needed as processing happens in pipeline.
-
 
 # Audio gate processor that can enable/disable audio flow
 class AudioGateProcessor(FrameProcessor):
@@ -120,7 +112,7 @@ class AudioGateProcessor(FrameProcessor):
         return self._is_enabled
 
 async def main():
-    logger.info("Starting Pipecat pipeline with Gemini Multimodal Live and WebSocket bridge...")
+    logger.info("Starting Pipecat pipeline with LLM-based intent recognition...")
 
     # Start WebSocket server
     websocket_server = await start_websocket_bridge()
@@ -139,63 +131,50 @@ async def main():
     # SINGLE SERVICE: Gemini handles BOTH LLM reasoning AND TTS
     gemini_service = GeminiMultimodalLiveLLMService(
         api_key=os.getenv("GOOGLE_API_KEY"),
-        model="models/gemini-2.0-flash-live-001",  # Use the correct Live API model
-        voice_id="Puck",  # Options: Aoede, Charon, Fenrir, Kore, Puck
+        model="models/gemini-2.0-flash-live-001",
+        voice_id="Puck",
         transcribe_user_audio=True,
         system_instruction="You are a helpful voice assistant. Keep responses brief and natural for speech. Avoid special characters that might cause audio issues.",
         params=InputParams(
             temperature=0.7,
             language=Language.EN_US,
-            modalities=GeminiMultimodalModalities.AUDIO  # Output audio directly
+            modalities=GeminiMultimodalModalities.AUDIO
         )
     )
 
-    # Create Frame Processors
-    intent_parser_fp = IntentParserFrameProcessor()
+    # Create Frame Processors - using LLM-based intent parser
+    llm_intent_parser_fp = LLMIntentParserFrameProcessor(gemini_service)
     firestore_service = FirestoreService()
     command_processor_fp = CommandProcessorFrameProcessor(firestore_service)
 
     # Create WebSocket bridge processor
     websocket_processor = WebSocketBridgeProcessor()
 
-    # REFACTORED PIPELINE:
-    # Audio Input -> Audio Gate -> Gemini (STT) -> Intent Parser FP -> Command Processor FP -> Gemini (TTS) -> WebSocket Bridge -> Audio Output
-    # Text Input (from UI) -> WebSocket Bridge -> Intent Parser FP -> Command Processor FP -> WebSocket Bridge (for text response)
+    # LLM-BASED PIPELINE:
+    # Audio Input -> Audio Gate -> Gemini (STT) -> LLM Intent Parser FP -> Command Processor FP -> Gemini (TTS) -> WebSocket Bridge -> Audio Output
+    # Text Input (from UI) -> WebSocket Bridge -> LLM Intent Parser FP -> Command Processor FP -> WebSocket Bridge (for text response)
 
-    # Note: GeminiMultimodalLiveLLMService can produce TextFrame (from STT) and consume TextFrame (for TTS).
-    # We need to ensure the flow is correct.
-    # If Gemini STT outputs TextFrame, it goes to IntentParser.
-    # If CommandProcessor outputs TextFrame (response), it should go to Gemini for TTS (if voice out) or WebSocketBridge (if text out).
-
-    # For voice interactions:
-    # Mic -> Gate -> Gemini (STT) -> [TextFrame] -> IntentParserFP -> [IntentFrame] -> CommandProcessorFP -> [TextFrame for TTS] -> Gemini (TTS) -> [AudioFrame] -> WebSocketBridge (for audio sync/info) -> Speakers
-    # For text interactions (from UI):
-    # UI Text -> WebSocketBridge (pushes TextFrame) -> IntentParserFP -> [IntentFrame] -> CommandProcessorFP -> [TextFrame for UI] -> WebSocketBridge (sends to UI)
+    # Key difference: Instead of rule-based IntentParserFrameProcessor, we use LLMIntentParserFrameProcessor
+    # which leverages the same Gemini service for intent classification and parameter extraction
 
     pipeline = Pipeline([
         transport.input(),          # Audio input from microphone
         audio_gate,                 # Audio gate (controllable)
         gemini_service,             # Gemini: STT (produces TextFrame), LLM, TTS (consumes TextFrame, produces AudioFrame)
-        # After Gemini STT, TextFrame goes downstream
-        intent_parser_fp,           # Consumes TextFrame, produces IntentFrame (downstream)
+        # After Gemini STT, TextFrame goes downstream to LLM intent parser
+        llm_intent_parser_fp,       # LLM-based: Consumes TextFrame, uses Gemini for intent classification, produces IntentFrame
         command_processor_fp,       # Consumes IntentFrame, produces TextFrame (upstream for TTS/response)
-        # The TextFrame from CommandProcessorFP needs to go to Gemini for TTS (if voice) or WebSocketBridge (if text).
-        # Gemini service will handle TextFrames in UPSTREAM direction for TTS.
-        # WebSocketBridge will handle TextFrames in UPSTREAM for UI text responses.
+        # The TextFrame from CommandProcessorFP goes to Gemini for TTS (upstream) or WebSocketBridge for UI
         websocket_processor,        # Bridges frames to/from WebSocket for Electron UI
         transport.output()          # Audio output to speakers
     ])
-
-    # The WebSocketBridgeProcessor will now push TextFrames from the UI into the pipeline (downstream)
-    # and send TextFrames from the pipeline (upstream) to the UI.
-    # Gemini service will handle TextFrames from CommandProcessorFP (upstream) for TTS.
 
     # Attach audio gate to pipeline for WebSocket control
     pipeline.audio_gate = audio_gate
     
     # Connect pipeline and text input handler to bridge
     bridge.set_pipeline(pipeline)
-    bridge.set_text_input_handler(websocket_processor.handle_text_from_ui) # Renamed for clarity
+    bridge.set_text_input_handler(websocket_processor.handle_text_from_ui)
 
     runner_params = {}
     if sys.platform == "win32":
@@ -203,7 +182,7 @@ async def main():
         runner_params["handle_sigint"] = False
 
     runner = PipelineRunner(**runner_params)
-    logger.info("Starting pipeline: Audio -> Gemini Live -> WebSocket Bridge -> Audio")
+    logger.info("Starting LLM-based pipeline: Audio -> Gemini Live -> LLM Intent Parser -> WebSocket Bridge -> Audio")
     
     task = PipelineTask(
         pipeline,
@@ -236,40 +215,3 @@ if __name__ == "__main__":
         logger.error(f"An error occurred: {type(e).__name__} - {repr(e)}")
         import traceback
         logger.error(traceback.format_exc())
-
-
-class CommandProcessorFrameProcessor(FrameProcessor):
-    async def process_frame(self, frame: Frame) -> AsyncGenerator[Frame, None]:
-        if isinstance(frame, IntentFrame):
-            # Extract parameters from parsed intent
-            intent_type = frame.intent['type']
-            params = frame.intent.get('params', {})
-
-            # Handle task creation intent
-            if intent_type == 'create_task':
-                # Validate required parameters
-                required = ['task_name', 'due_date']
-                if all(param in params for param in required):
-                    # Create Supabase task record
-                    supabase_client = create_client(
-                        os.getenv('SUPABASE_URL'),
-                        os.getenv('SUPABASE_KEY'))
-                    
-                    task_data = {
-                        'name': params['task_name'],
-                        'due_date': params['due_date'],
-                        'priority': params.get('priority', 'medium'),
-                        'status': 'pending'
-                    }
-                    
-                    try:
-                        result = supabase_client.table('tasks').insert(task_data).execute()
-                        yield TextFrame(f"Task created: {params['task_name']} due {params['due_date']}")
-                    except Exception as e:
-                        yield TextFrame("Failed to create task. Please try again.")
-                else:
-                    missing = [p for p in required if p not in params]
-                    yield TextFrame(f"Please clarify: {', '.join(missing)}")
-            # Add other intent handlers here
-        
-        await self.push_frame(frame)

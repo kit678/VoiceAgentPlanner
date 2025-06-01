@@ -1,3 +1,6 @@
 node_modules
 package.json
 voice-assistant\node_modules
+voice-assistant\src\pipecat_pipeline.py.backup
+voice-assistant\src\pipecat_pipeline_llm_intent.py.backup
+voice-assistant\src\llm\pipeline.py.backup
