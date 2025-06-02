@@ -48,13 +48,13 @@ class FirestoreService:
         try:
             collection_ref = self.db.collection(collection_name)
             if doc_id:
-                await collection_ref.document(doc_id).set(data)
+                collection_ref.document(doc_id).set(data)
                 logger.info(f"Document with ID '{doc_id}' added/updated in collection '{collection_name}'.")
                 return doc_id
             else:
-                doc_ref = await collection_ref.add(data)
-                logger.info(f"Document added to collection '{collection_name}' with ID: {doc_ref.id}")
-                return doc_ref.id
+                doc_ref, doc_id = collection_ref.add(data)
+                logger.info(f"Document added to collection '{collection_name}' with ID: {doc_id}")
+                return doc_id
         except Exception as e:
             logger.error(f"Error adding document to '{collection_name}': {e}")
             raise
@@ -62,7 +62,7 @@ class FirestoreService:
     async def get_document(self, collection_name: str, doc_id: str):
         try:
             doc_ref = self.db.collection(collection_name).document(doc_id)
-            doc = await doc_ref.get()
+            doc = doc_ref.get()
             if doc.exists:
                 logger.info(f"Document '{doc_id}' retrieved from '{collection_name}'.")
                 return doc.to_dict()
@@ -76,7 +76,7 @@ class FirestoreService:
     async def update_document(self, collection_name: str, doc_id: str, data: dict):
         try:
             doc_ref = self.db.collection(collection_name).document(doc_id)
-            await doc_ref.update(data)
+            doc_ref.update(data)
             logger.info(f"Document '{doc_id}' updated in '{collection_name}'.")
         except Exception as e:
             logger.error(f"Error updating document '{doc_id}' in '{collection_name}': {e}")
@@ -84,7 +84,7 @@ class FirestoreService:
 
     async def delete_document(self, collection_name: str, doc_id: str):
         try:
-            await self.db.collection(collection_name).document(doc_id).delete()
+            self.db.collection(collection_name).document(doc_id).delete()
             logger.info(f"Document '{doc_id}' deleted from '{collection_name}'.")
         except Exception as e:
             logger.error(f"Error deleting document '{doc_id}' from '{collection_name}': {e}")
@@ -107,7 +107,7 @@ class FirestoreService:
             if limit:
                 query = query.limit(limit)
 
-            docs = await query.get()
+            docs = query.get()
             results = []
             for doc in docs:
                 data = doc.to_dict()

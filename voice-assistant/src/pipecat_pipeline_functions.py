@@ -41,6 +41,7 @@ from functions.google_workspace_functions import GoogleWorkspaceFunctions
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../../.env'), override=True)
 
+# Simple logging setup like the previous version
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
 
@@ -117,17 +118,17 @@ class AudioGateProcessor(FrameProcessor):
 
 def create_function_schemas():
     all_schemas = [
-        # Task management functions
-        FunctionSchema(
-            name="create_task",
-            description="Create a new task with a name, due date, and optional priority",
-            properties={
-                "task_name": {"type": "string", "description": "The name or description of the task"},
-                "due_date": {"type": "string", "description": "The due date for the task (YYYY-MM-DD format or natural language like 'tomorrow', 'next week')"},
-                "priority": {"type": "string", "enum": ["low", "medium", "high"], "description": "The priority level of the task"},
-            },
-            required=["task_name", "due_date"],
-        ),
+        # Task management functions - TEMPORARILY DISABLED FOR GOOGLE TASKS TESTING
+        # FunctionSchema(
+        #     name="create_task",
+        #     description="Create a new task with local storage (use this for general task requests unless user specifically mentions 'Google task')",
+        #     properties={
+        #         "task_name": {"type": "string", "description": "The name or description of the task"},
+        #         "due_date": {"type": "string", "description": "The due date for the task (YYYY-MM-DD format or natural language like 'tomorrow', 'next week')"},
+        #         "priority": {"type": "string", "enum": ["low", "medium", "high"], "description": "The priority level of the task"},
+        #     },
+        #     required=["task_name", "due_date"],
+        # ),
         FunctionSchema(
             name="list_tasks",
             description="List all tasks, optionally filtered by status or due date",
@@ -245,7 +246,7 @@ def create_function_schemas():
         # Google Workspace functions
         FunctionSchema(
             name="create_google_task",
-            description="Create a new task in Google Tasks",
+            description="Create a new task directly in Google Tasks (when user specifically mentions 'Google task' or 'Google Tasks')",
             properties={
                 "title": {"type": "string", "description": "The title of the task"},
                 "notes": {"type": "string", "description": "Optional notes or description for the task"},
@@ -310,7 +311,7 @@ def create_function_schemas():
 async def main():
     logger.info("Starting Pipecat pipeline with Gemini function calling and WebSocket bridge...")
 
-    # Configure Audio Transport
+    # Configure Audio Transport - simple setup like previous version
     transport_params = LocalAudioTransportParams(
         audio_in_enabled=True,
         audio_out_enabled=True,
@@ -331,7 +332,7 @@ async def main():
     integration_functions = IntegrationFunctions()
     google_workspace_functions = GoogleWorkspaceFunctions()
 
-    # Create function schemas
+    # Create function schemas using the previous version's approach
     function_schemas_list, _ = create_function_schemas()
     
     # Convert FunctionSchema objects to Gemini-compatible function declaration dictionaries
@@ -354,7 +355,7 @@ async def main():
         "function_declarations": function_declarations
     }]
 
-    # GEMINI SERVICE with Function Calling
+    # GEMINI SERVICE with Function Calling - using previous version's approach
     gemini_service = GeminiMultimodalLiveLLMService(
         api_key=os.getenv("GOOGLE_API_KEY"),
         model="models/gemini-2.0-flash-live-001",
@@ -362,20 +363,30 @@ async def main():
         transcribe_user_audio=True,
         system_instruction="""You are a helpful voice assistant that can manage tasks, reminders, timers, notes, and goals. 
         
-When users request actions like creating tasks, setting reminders, or taking notes, use the appropriate function calls.
-        
-Keep responses brief and natural for speech. Confirm actions clearly and ask for clarification when needed.
-        
-You MUST use the provided function_declarations when a user asks for something that matches a function's description.
-If you need to call a function, respond with a JSON object that includes `tool_code` and `tool_name`.
-The `tool_code` should be a unique identifier for this specific function call.
-The `tool_name` must be one of the names from the `function_declarations`.
-The arguments for the function should be provided in a JSON object under `args`.
+Your primary goal is to assist the user conversationally. Only call functions when the user explicitly requests an action that matches a function's description. Do NOT proactively suggest or call functions without a clear user intent. If a user's request is ambiguous, ask for clarification before attempting to call a function.
 
-Example:
-User: "Create a task to buy milk tomorrow"
-Assistant: {"tool_code": "12345", "tool_name": "create_task", "args": {"task_name": "buy milk", "due_date": "tomorrow"}}
-""",
+Examples of when you MUST call functions:
+- "Create a Google task" → call create_google_task
+- "List my Google tasks" → call list_google_tasks  
+- "Set a reminder" → call set_reminder
+- "Start a timer" → call start_timer
+- "Take a note" → call take_note
+
+You MUST use the provided function_declarations for ANY request that matches their descriptions.
+
+When formatting function results, follow these templates:
+
+For task listing results:
+- If no tasks: "You currently have no tasks in that list."
+- If 1 task: "You have 1 task: [task_title]"
+- If 2-5 tasks: "You have [count] tasks: [task1], [task2], etc."
+- If >5 tasks: "You have [count] tasks. The first 5 are: [list], and [remaining_count] more."
+
+For task creation results:
+- Success: "I've successfully created the task '[task_name]' for you."
+- Failure: "I couldn't create that task. [error_message]"
+        
+Keep responses brief and natural for speech. Confirm actions clearly after function completion.""",
         tools=tools,  # Use the properly structured tools
         input_params=InputParams(
             language=Language.EN_US,
@@ -384,11 +395,7 @@ Assistant: {"tool_code": "12345", "tool_name": "create_task", "args": {"task_nam
         )
     )
 
-    # Register function handlers with Gemini service
-    async def handle_create_task(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await task_functions.create_task(args.get('task_name'), args.get('due_date'), args.get('priority', 'medium'))
-        await result_callback(result)
-
+    # Register function handlers using the previous version's approach
     async def handle_list_tasks(function_name, tool_call_id, args, llm, context, result_callback):
         result = await task_functions.list_tasks(args.get('status', 'all'), args.get('due_date'))
         await result_callback(result)
@@ -400,12 +407,6 @@ Assistant: {"tool_code": "12345", "tool_name": "create_task", "args": {"task_nam
     async def handle_start_timer(function_name, tool_call_id, args, llm, context, result_callback):
         result = await timer_functions.start_timer(args.get('duration_minutes'), args.get('description'))
         await result_callback(result)
-
-    # Register functions with the service
-    gemini_service.register_function("create_task", handle_create_task)
-    gemini_service.register_function("list_tasks", handle_list_tasks)
-    gemini_service.register_function("set_reminder", handle_set_reminder)
-    gemini_service.register_function("start_timer", handle_start_timer)
 
     async def handle_take_note(function_name, tool_call_id, args, llm, context, result_callback):
         result = await note_functions.take_note(args.get('content'), args.get('tags', []))
@@ -434,13 +435,6 @@ Assistant: {"tool_code": "12345", "tool_name": "create_task", "args": {"task_nam
         result = await utility_functions.get_current_time(args.get('timezone', 'local'))
         await result_callback(result)
 
-    # Register remaining functions with the service
-    gemini_service.register_function("take_note", handle_take_note)
-    gemini_service.register_function("create_goal", handle_create_goal)
-    gemini_service.register_function("get_status", handle_get_status)
-    gemini_service.register_function("get_current_window_context", handle_get_current_window_context)
-    gemini_service.register_function("get_current_time", handle_get_current_time)
-    
     # Integration function handlers
     async def handle_sync_with_trello(function_name, tool_call_id, args, llm, context, result_callback):
         result = await integration_functions.sync_with_trello(args.get('task_data'))
@@ -458,24 +452,103 @@ Assistant: {"tool_code": "12345", "tool_name": "create_task", "args": {"task_nam
         result = await integration_functions.get_integration_status()
         await result_callback(result)
     
-    # Register integration functions
-    gemini_service.register_function("sync_with_trello", handle_sync_with_trello)
-    gemini_service.register_function("sync_with_notion", handle_sync_with_notion)
-    gemini_service.register_function("create_calendar_event", handle_create_calendar_event)
-    gemini_service.register_function("get_integration_status", handle_get_integration_status)
-    
-    # Google Workspace function handlers
+    # Google Workspace function handlers - updated to match current Google function implementations
     async def handle_create_google_task(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await google_workspace_functions.create_google_task(
-            args.get('title'), args.get('notes', ''), args.get('due_date')
-        )
-        await result_callback(result)
+        logger.info(f"=== GOOGLE TASKS: handle_create_google_task called ===")
+        logger.info(f"Function args: {args}")
+        
+        try:
+            task_name = args.get('title') or args.get('task_name', 'Untitled Task')
+            due_date = args.get('due_date')
+            priority = args.get('priority', 'medium')
+            list_name = args.get('list_name', 'My Tasks')
+            
+            logger.info(f"Creating Google task: task_name='{task_name}', due_date='{due_date}', list_name='{list_name}'")
+            
+            result = await google_workspace_functions.create_google_task(
+                task_name=task_name,
+                due_date=due_date, 
+                priority=priority,
+                list_name=list_name
+            )
+            logger.info(f"Google Tasks API result: {result}")
+            
+            # Return raw data dictionary for the LLM to format
+            if result.get("success"):
+                formatted_result = {
+                    "success": True,
+                    "task_name": task_name,
+                    "message": result.get("message", f"Successfully created task: {task_name}"),
+                    "details": result.get("task_details", {})
+                }
+            else:
+                formatted_result = {
+                    "success": False,
+                    "task_name": task_name,
+                    "message": result.get("message", f"Failed to create task: {task_name}"),
+                    "error_details": result.get("error", None)
+                }
+            
+            await result_callback(formatted_result)
+                
+        except Exception as e:
+            logger.error(f"Exception in handle_create_google_task: {e}", exc_info=True)
+            error_response = {
+                "success": False,
+                "error": True,
+                "message": f"There was an error trying to create your task: {str(e)}"
+            }
+            await result_callback(error_response)
     
     async def handle_list_google_tasks(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await google_workspace_functions.list_google_tasks(
-            args.get('tasklist_id', '@default'), args.get('max_results', 10)
-        )
-        await result_callback(result)
+        logger.info(f"=== GOOGLE TASKS: handle_list_google_tasks called ===")
+        logger.info(f"Function args: {args}")
+        
+        try:
+            list_id = args.get('tasklist_id', '@default')
+            
+            result = await google_workspace_functions.list_google_tasks(
+                list_id=list_id,
+                status_filter="all" 
+            )
+            logger.info(f"Google Tasks API result: {result}")
+            
+            # Return raw data dictionary for the LLM to format
+            if result.get("success"):
+                count = result.get("count", 0)
+                tasks_data = result.get("tasks", [])
+                
+                formatted_result = {
+                    "success": True,
+                    "task_count": count,
+                    "tasks": [{
+                        "title": task.get('title', 'Untitled Task'),
+                        "id": task.get('id', ''),
+                        "status": task.get('status', 'needsAction')
+                    } for task in tasks_data],
+                    "list_id": list_id
+                }
+            else:
+                formatted_result = {
+                    "success": False,
+                    "task_count": 0,
+                    "tasks": [],
+                    "message": result.get("message", "Sorry, I couldn't list your tasks right now."),
+                    "error_details": result.get("error", None)
+                }
+            
+            await result_callback(formatted_result)
+            
+        except Exception as e:
+            logger.error(f"Exception in handle_list_google_tasks: {e}", exc_info=True)
+            error_response = {
+                "success": False,
+                "error": True,
+                "task_count": 0,
+                "tasks": [],
+                "message": f"There was an error trying to list your tasks: {str(e)}"
+            }
+            await result_callback(error_response)
     
     async def handle_create_google_calendar_event(function_name, tool_call_id, args, llm, context, result_callback):
         result = await google_workspace_functions.create_calendar_event(
@@ -501,6 +574,22 @@ Assistant: {"tool_code": "12345", "tool_name": "create_task", "args": {"task_nam
             args.get('title'), args.get('content', '')
         )
         await result_callback(result)
+
+    # Register all functions with the service using the previous version's approach
+    gemini_service.register_function("list_tasks", handle_list_tasks)
+    gemini_service.register_function("set_reminder", handle_set_reminder)
+    gemini_service.register_function("start_timer", handle_start_timer)
+    gemini_service.register_function("take_note", handle_take_note)
+    gemini_service.register_function("create_goal", handle_create_goal)
+    gemini_service.register_function("get_status", handle_get_status)
+    gemini_service.register_function("get_current_window_context", handle_get_current_window_context)
+    gemini_service.register_function("get_current_time", handle_get_current_time)
+    
+    # Register integration functions
+    gemini_service.register_function("sync_with_trello", handle_sync_with_trello)
+    gemini_service.register_function("sync_with_notion", handle_sync_with_notion)
+    gemini_service.register_function("create_calendar_event", handle_create_calendar_event)
+    gemini_service.register_function("get_integration_status", handle_get_integration_status)
     
     # Register Google Workspace functions
     gemini_service.register_function("create_google_task", handle_create_google_task)
@@ -513,7 +602,7 @@ Assistant: {"tool_code": "12345", "tool_name": "create_task", "args": {"task_nam
     # Create WebSocket bridge processor
     websocket_processor = WebSocketBridgeProcessor()
 
-    # SIMPLIFIED PIPELINE with Function Calling:
+    # SIMPLIFIED PIPELINE like the previous version - no monitoring processors
     # Audio/Text Input -> Audio Gate -> Gemini (STT + Function Calling + TTS) -> WebSocket Bridge -> Audio Output
     pipeline = Pipeline([
         transport.input(),          # Audio input from microphone

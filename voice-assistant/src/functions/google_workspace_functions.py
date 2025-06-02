@@ -30,23 +30,45 @@ class GoogleWorkspaceFunctions:
         Returns:
             Authenticated service client
         """
+        logger.info(f"=== GET SERVICE: {service_name} ===")
+        
         if service_name not in self._services:
             try:
+                logger.info(f"Service '{service_name}' not cached, initializing...")
+                
+                # Check authentication first
+                logger.info("Checking OAuth authentication status...")
+                is_authenticated = await self.oauth_manager.is_authenticated()
+                logger.info(f"Authentication status: {is_authenticated}")
+                
+                if not is_authenticated:
+                    logger.error("❌ User is not authenticated with Google OAuth")
+                    raise Exception("User is not authenticated with Google OAuth")
+                
                 if service_name == 'tasks':
+                    logger.info("Getting Google Tasks service...")
                     self._services[service_name] = await self.oauth_manager.get_tasks_service()
                 elif service_name == 'calendar':
+                    logger.info("Getting Google Calendar service...")
                     self._services[service_name] = await self.oauth_manager.get_calendar_service()
                 elif service_name == 'drive':
+                    logger.info("Getting Google Drive service...")
                     self._services[service_name] = await self.oauth_manager.get_drive_service()
                 elif service_name == 'docs':
+                    logger.info("Getting Google Docs service...")
                     self._services[service_name] = await self.oauth_manager.get_docs_service()
                 else:
                     raise ValueError(f"Unknown service: {service_name}")
                     
-                logger.info(f"Initialized {service_name} service")
+                logger.info(f"✅ Successfully initialized {service_name} service")
             except Exception as e:
-                logger.error(f"Failed to initialize {service_name} service: {e}")
+                logger.error(f"❌ Failed to initialize {service_name} service: {e}")
+                logger.error(f"Exception type: {type(e).__name__}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 raise
+        else:
+            logger.info(f"Using cached {service_name} service")
                 
         return self._services[service_name]
     
@@ -65,15 +87,24 @@ class GoogleWorkspaceFunctions:
         Returns:
             Dict with success status and task details
         """
+        logger.info(f"=== CREATE GOOGLE TASK START ===")
+        logger.info(f"Parameters: task_name='{task_name}', due_date='{due_date}', priority='{priority}', list_id='{list_id}'")
+        
         try:
+            logger.info("Getting Google Tasks service...")
             service = await self._get_service('tasks')
+            logger.info("Google Tasks service obtained successfully")
             
             # Get default task list if none specified
             if not list_id:
+                logger.info("No list_id provided, fetching default task list...")
                 task_lists = service.tasklists().list().execute()
+                logger.info(f"Retrieved task lists: {task_lists}")
                 list_id = task_lists['items'][0]['id'] if task_lists.get('items') else None
+                logger.info(f"Using default list_id: {list_id}")
                 
             if not list_id:
+                logger.error("No task lists found in Google Tasks")
                 return {
                     "success": False,
                     "message": "No task lists found in Google Tasks"
@@ -84,6 +115,7 @@ class GoogleWorkspaceFunctions:
                 'title': task_name,
                 'notes': f"Priority: {priority}\nCreated by Voice Assistant"
             }
+            logger.info(f"Prepared task body: {task_body}")
             
             # Add due date if provided
             if due_date:
@@ -91,11 +123,14 @@ class GoogleWorkspaceFunctions:
                     # Convert to RFC 3339 format
                     due_datetime = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
                     task_body['due'] = due_datetime.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+                    logger.info(f"Added due date to task: {task_body['due']}")
                 except ValueError:
                     logger.warning(f"Invalid due date format: {due_date}")
             
             # Create task
+            logger.info(f"Creating task in Google Tasks with list_id: {list_id}")
             result = service.tasks().insert(tasklist=list_id, body=task_body).execute()
+            logger.info(f"Google Tasks API response: {result}")
             
             # Store in Firestore for local tracking
             task_data = {
@@ -109,9 +144,11 @@ class GoogleWorkspaceFunctions:
                 'synced_with_google': True
             }
             
+            logger.info(f"Storing task in Firestore: {task_data}")
             doc_ref = await self.firestore.add_document('tasks', task_data)
+            logger.info(f"Firestore document created with ID: {doc_ref.id}")
             
-            logger.info(f"Created Google Task: {task_name}")
+            logger.info(f"✅ Successfully created Google Task: {task_name}")
             return {
                 "success": True,
                 "message": f"Task '{task_name}' created successfully",
@@ -121,13 +158,17 @@ class GoogleWorkspaceFunctions:
             }
             
         except HttpError as e:
-            logger.error(f"Google Tasks API error: {e}")
+            logger.error(f"❌ Google Tasks API error: {e}")
+            logger.error(f"HTTP Error details: status={e.resp.status}, reason={e.resp.reason}")
             return {
                 "success": False,
                 "message": f"Google Tasks API error: {e}"
             }
         except Exception as e:
-            logger.error(f"Error creating Google Task: {e}")
+            logger.error(f"❌ Error creating Google Task: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {
                 "success": False,
                 "message": f"Error creating task: {str(e)}"
@@ -142,55 +183,63 @@ class GoogleWorkspaceFunctions:
             status_filter: Filter by status ('all', 'needsAction', 'completed')
             
         Returns:
-            Dict with success status and tasks list
+            Dict with success status and tasks list, or a string message for TTS.
         """
+        logger.info(f"=== LIST GOOGLE TASKS START ===")
+        logger.info(f"Parameters: list_id='{list_id}', status_filter='{status_filter}'")
         try:
             service = await self._get_service('tasks')
+            logger.info("Google Tasks service obtained successfully")
             
-            # Get default task list if none specified
-            if not list_id:
-                task_lists = service.tasklists().list().execute()
-                list_id = task_lists['items'][0]['id'] if task_lists.get('items') else None
-                
-            if not list_id:
+            # Fetch default task list if not provided
+            task_lists = service.tasklists().list().execute()
+            if task_lists.get('items'):
+                list_id = task_lists['items'][0]['id'] 
+                logger.info(f"No list_id provided, using default: {list_id}")
+            else:
+                logger.error("No task lists found for user.")
                 return {
                     "success": False,
-                    "message": "No task lists found in Google Tasks"
+                    "message": "You don't have any task lists in Google Tasks."
                 }
             
-            # Build query parameters
-            params = {'tasklist': list_id}
-            if status_filter != "all":
-                if status_filter == "completed":
-                    params['showCompleted'] = True
-                    params['showHidden'] = True
-                else:
-                    params['showCompleted'] = False
+            # Build query parameters for the API call
+            # Always fetch all tasks from the API initially, then filter locally
+            api_params = {
+                'tasklist': list_id,
+                'showCompleted': True, # Always get completed tasks from API
+                'showHidden': True,    # Always get hidden tasks from API
+                'maxResults': 100      # Fetch a reasonable number for local filtering
+            }
             
-            # Get tasks
-            result = service.tasks().list(**params).execute()
+            logger.info(f"Fetching Google Tasks with API params: {api_params}")
+            result = service.tasks().list(**api_params).execute()
             tasks = result.get('items', [])
+            logger.info(f"Retrieved {len(tasks)} raw tasks from API for list_id: {list_id}")
             
-            # Filter by status if needed
+            # Filter by status locally if needed
             if status_filter != "all":
-                tasks = [task for task in tasks if task.get('status') == status_filter]
+                filtered_tasks = [task for task in tasks if task.get('status') == status_filter]
+                logger.info(f"Filtered tasks by status '{status_filter}', count: {len(filtered_tasks)}")
+            else:
+                filtered_tasks = tasks # No local status filtering needed
             
-            logger.info(f"Retrieved {len(tasks)} Google Tasks")
+            logger.info(f"Returning {len(filtered_tasks)} Google Tasks after filtering.")
             return {
                 "success": True,
-                "message": f"Retrieved {len(tasks)} tasks",
-                "tasks": tasks,
-                "count": len(tasks)
+                "message": f"Retrieved {len(filtered_tasks)} tasks",
+                "tasks": filtered_tasks,
+                "count": len(filtered_tasks)
             }
             
         except HttpError as e:
-            logger.error(f"Google Tasks API error: {e}")
+            logger.error(f"Google Tasks API error in list_google_tasks: {e.content}") # Log content for more details
             return {
                 "success": False,
-                "message": f"Google Tasks API error: {e}"
+                "message": f"Google Tasks API error: {e.resp.status} - {e.reason}"
             }
         except Exception as e:
-            logger.error(f"Error listing Google Tasks: {e}")
+            logger.error(f"Error listing Google Tasks: {e}", exc_info=True)
             return {
                 "success": False,
                 "message": f"Error listing tasks: {str(e)}"

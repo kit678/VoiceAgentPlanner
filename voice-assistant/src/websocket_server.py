@@ -122,34 +122,51 @@ class PipecatWebSocketBridge:
             
     async def start_listening(self):
         """Start the Pipecat pipeline listening"""
+        logger.info("[WEBSOCKET] START_LISTENING command received from frontend")
         if self.pipecat_pipeline and not self.is_listening:
             self.is_listening = True
-            logger.info("Started listening")
+            logger.info("[WEBSOCKET] Setting listening state to True")
             
             # Enable the audio gate to allow audio through
             if hasattr(self.pipecat_pipeline, 'audio_gate'):
+                logger.info("[WEBSOCKET] Enabling audio gate to allow audio flow")
                 await self.pipecat_pipeline.audio_gate.enable()
+            else:
+                logger.warning("[WEBSOCKET] No audio_gate found on pipecat_pipeline")
             
             await self.broadcast_to_clients(MessageType.STATUS, {
                 "listening": True,
                 "message": "Voice assistant is now listening"
             })
+            logger.info("[WEBSOCKET] Sent LISTENING status to frontend clients")
+        else:
+            if not self.pipecat_pipeline:
+                logger.warning("[WEBSOCKET] Cannot start listening - no pipecat_pipeline")
+            elif self.is_listening:
+                logger.info("[WEBSOCKET] Already listening - ignoring START_LISTENING command")
             
     async def stop_listening(self):
         """Stop the Pipecat pipeline listening"""
+        logger.info("[WEBSOCKET] STOP_LISTENING command received from frontend")
         if self.is_listening:
             self.is_listening = False
             self._text_input_handler = None # Renamed from _command_handler
-            logger.info("Stopped listening")
+            logger.info("[WEBSOCKET] Setting listening state to False")
             
             # Disable the audio gate to block audio
             if hasattr(self.pipecat_pipeline, 'audio_gate'):
+                logger.info("[WEBSOCKET] Disabling audio gate to block audio flow")
                 await self.pipecat_pipeline.audio_gate.disable()
+            else:
+                logger.warning("[WEBSOCKET] No audio_gate found on pipecat_pipeline")
             
             await self.broadcast_to_clients(MessageType.STATUS, {
                 "listening": False,
                 "message": "Voice assistant stopped listening"
             })
+            logger.info("[WEBSOCKET] Sent STOPPED LISTENING status to frontend clients")
+        else:
+            logger.info("[WEBSOCKET] Already not listening - ignoring STOP_LISTENING command")
             
     async def send_text_to_pipeline(self, text: str):
         """Send text input to the command handler in Pipecat pipeline"""
@@ -197,7 +214,15 @@ class PipecatWebSocketBridge:
     def set_pipeline(self, pipeline):
         """Set the Pipecat pipeline reference"""
         self.pipecat_pipeline = pipeline
-        logger.info("Pipecat pipeline connected to WebSocket bridge")
+        logger.info("[WEBSOCKET] Pipecat pipeline connected to WebSocket bridge")
+        
+        # Check if the pipeline has an audio gate
+        if hasattr(pipeline, 'audio_gate'):
+            logger.info(f"[WEBSOCKET] Audio gate found on pipeline: {type(pipeline.audio_gate).__name__}")
+            logger.info(f"[WEBSOCKET] Audio gate initial state: {'ENABLED' if pipeline.audio_gate.is_enabled else 'DISABLED'}")
+        else:
+            logger.warning("[WEBSOCKET] No audio_gate attribute found on registered pipeline")
+            logger.info(f"[WEBSOCKET] Pipeline attributes: {[attr for attr in dir(pipeline) if not attr.startswith('_')]}")
 
     def set_text_input_handler(self, handler_coroutine):
         """Set the coroutine to handle text commands from the UI."""

@@ -14,7 +14,6 @@ src/auth/
 ├── electron_auth_handler.py # Python-Electron bridge
 ├── electron_main.js         # Electron main process
 ├── preload.js              # Electron preload script
-├── setup_google_auth.py    # Interactive setup script
 └── README.md               # This file
 
 renderer/
@@ -23,21 +22,7 @@ renderer/
 
 ## 🚀 Quick Start
 
-### 1. Run the Setup Script
-
-```bash
-cd /path/to/voice-assistant
-python src/auth/setup_google_auth.py
-```
-
-The setup script will guide you through:
-- Creating a Google Cloud project
-- Enabling required APIs
-- Configuring OAuth credentials
-- Setting up environment variables
-- Testing the authentication flow
-
-### 2. Manual Setup (Alternative)
+### 1. Manual Setup
 
 If you prefer manual setup:
 

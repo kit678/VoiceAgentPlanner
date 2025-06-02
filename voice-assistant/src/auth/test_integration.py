@@ -384,8 +384,7 @@ async def main():
         logger.error("Missing required environment variables:")
         logger.error("  - GOOGLE_CLIENT_ID")
         logger.error("  - GOOGLE_CLIENT_SECRET")
-        logger.info("\nPlease run the setup script first:")
-        logger.info("  python src/auth/setup_google_auth.py")
+        logger.info("\nPlease ensure these environment variables are set.")
         return False
     
     # Run tests
