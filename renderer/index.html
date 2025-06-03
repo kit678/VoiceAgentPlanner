@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header Section -->
+        <header class="app-header">
+            <div class="logo-section">
+                <i class="fas fa-microphone-alt logo-icon"></i>
+                <h1 class="app-title">Voice Assistant</h1>
+            </div>
+            <div class="status-indicators">
+                <div class="status-item" id="backend-status">
+                    <div class="status-dot disconnected"></div>
+                    <span class="status-text">Disconnected</span>
+                </div>
+                <div class="status-item" id="auth-status">
+                    <div class="status-dot unauthorized"></div>
+                    <span class="status-text">Not Authenticated</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Authentication Section -->
+            <section class="auth-section" id="auth-section">
+                <div class="auth-card">
+                    <div class="auth-icon">
+                        <i class="fab fa-google"></i>
+                    </div>
+                    <h2>Connect Your Google Account</h2>
+                    <p>Authenticate with Google to access your calendar, tasks, and documents.</p>
+                    <div id="signin-button-container">
+                        <button class="auth-button" id="google-signin-button">
+                            <i class="fab fa-google"></i>
+                            Sign in with Google
+                        </button>
+                    </div>
+                    <button class="auth-button" id="logout-button" style="display: none; margin-top: 10px;">
+                        <i class="fas fa-sign-out-alt"></i>
+                        Sign Out
+                    </button>
+                </div>
+            </section>
+
+            <!-- Voice Interface Section -->
+            <section class="voice-section" id="voice-section" style="display: none;">
+                <!-- Microphone Selection -->
+                <div class="mic-selection">
+                    <label for="mic-select">Microphone:</label>
+                    <select id="mic-select" class="mic-dropdown">
+                        <option value="">Select microphone...</option>
+                    </select>
+                    <button id="refresh-mics" class="refresh-btn" title="Refresh microphones">
+                        <i class="fas fa-sync-alt"></i>
+                    </button>
+                </div>
+
+                <!-- Voice Visualization -->
+                <div class="voice-visualizer">
+                    <div class="mic-button" id="mic-button">
+                        <div class="mic-icon">
+                            <i class="fas fa-microphone"></i>
+                        </div>
+                        <div class="pulse-ring"></div>
+                        <div class="pulse-ring pulse-ring-2"></div>
+                    </div>
+                    <div class="voice-status" id="voice-status">
+                        <span>Press hotkey or click to start listening</span>
+                    </div>
+                </div>
+
+                <!-- Transcription Display -->
+                <div class="transcription-section">
+                    <div class="section-header">
+                        <i class="fas fa-quote-left"></i>
+                        <h3>What you said</h3>
+                    </div>
+                    <div class="transcription-display" id="transcription-display">
+                        <div class="placeholder-text">Your speech will appear here...</div>
+                    </div>
+                </div>
+
+                <!-- Assistant Response -->
+                <div class="response-section">
+                    <div class="section-header">
+                        <i class="fas fa-robot"></i>
+                        <h3>Assistant Response</h3>
+                    </div>
+                    <div class="response-display" id="response-display">
+                        <div class="placeholder-text">Assistant responses will appear here...</div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- OAuth Callback Handler -->
+        <div class="oauth-callback" id="oauth-callback" style="display: none;">
+            <div class="callback-content">
+                <div class="spinner"></div>
+                <p>Processing authentication...</p>
+            </div>
+        </div>
+
+        <!-- Notification System -->
+        <div class="notification-container" id="notification-container"></div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="websocket_client.js"></script>
+    <script src="renderer.js"></script>
+</body>
+</html>

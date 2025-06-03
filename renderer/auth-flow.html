@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Authenticate</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Authentication Required</h1>
+    <p>Please follow the instructions to authenticate with your Google account.</p>
+    <button id="google-signin-button">Sign in with Google</button>
+    <p id="auth-status">Status: Waiting for authentication...</p>
+  </div>
+  <script>
+    // Basic script to handle button click and communicate with main process
+    const signInButton = document.getElementById('google-signin-button');
+    const authStatus = document.getElementById('auth-status');
+
+    signInButton.addEventListener('click', async () => {
+      authStatus.textContent = 'Status: Initiating Google Sign-In...';
+      signInButton.disabled = true;
+      
+      try {
+        // This would typically trigger the OAuth flow via preload script
+        if (window.api && window.api.startGoogleAuth) {
+          console.log('Calling startGoogleAuth...');
+          const result = await window.api.startGoogleAuth();
+          console.log('startGoogleAuth result:', result);
+          
+          if (result.success && result.authUrl) {
+            authStatus.innerHTML = `Status: Opening browser for authentication...<br><small>If browser doesn't open, <a href="#" onclick="window.api.openExternal('${result.authUrl}'); return false;">click here</a></small>`;
+            // Open the OAuth URL in the default browser
+            await window.api.openExternal(result.authUrl);
+            authStatus.textContent = 'Status: Please complete authentication in your browser...';
+          } else {
+            authStatus.textContent = `Status: Error starting authentication: ${result.error || 'Unknown error'}`;
+            signInButton.disabled = false;
+          }
+        } else {
+          authStatus.textContent = 'Error: Authentication API not available.';
+          console.error('Error: window.api.startGoogleAuth is not available.');
+          signInButton.disabled = false;
+        }
+      } catch (error) {
+        console.error('Error during authentication:', error);
+        authStatus.textContent = `Status: Error during authentication: ${error.message}`;
+        signInButton.disabled = false;
+      }
+    });
+
+    // Listen for OAuth callback from main process
+    if (window.api && window.api.onOAuthCallback) {
+        window.api.onOAuthCallback((result) => {
+            console.log('OAuth callback received:', result);
+            if (result.success) {
+                authStatus.textContent = 'Status: Authentication Successful! You can close this window.';
+                // Notify main process that authentication is complete
+                if (window.api.sendAuthCompleted) {
+                    window.api.sendAuthCompleted(true);
+                }
+            } else {
+                authStatus.textContent = `Status: Authentication Failed: ${result.error || 'Unknown error'}`;
+                signInButton.disabled = false;
+                // Notify main process that authentication failed
+                if (window.api.sendAuthCompleted) {
+                    window.api.sendAuthCompleted(false);
+                }
+            }
+        });
+    }
+
+    // Listen for authentication completion from main process (alternative path)
+    if (window.api && window.api.onAuthCompleted) {
+        window.api.onAuthCompleted((success) => {
+            console.log('Auth completed signal received:', success);
+            if (success) {
+                authStatus.textContent = 'Status: Authentication Successful! You can close this window.';
+            } else {
+                authStatus.textContent = 'Status: Authentication Failed. Please try again or check logs.';
+                signInButton.disabled = false;
+            }
+        });
+    }
+
+    console.log('Auth flow HTML loaded, API available:', !!window.api);
+  </script>
+</body>
+</html>

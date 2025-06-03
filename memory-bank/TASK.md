@@ -102,7 +102,7 @@
   - ✅ `create_task(task_name, due_date, priority)` - Creates tasks with Firestore + Google Tasks sync
   - ✅ `list_tasks(status, due_date)` - Lists tasks with filtering from Firestore
   - ✅ `update_task_status(task_id, status)` - Updates task status with Google sync
-- **Integration Status**: ✅ Google Tasks API integration (primary) + Trello fallback
+- **Integration Status**: ✅ Google Tasks API integration (primary)
 - **Dependencies**: ✅ Persistent Storage System (FR9) - Firebase Firestore
 - **Files**: `functions/task_functions.py` ✅ (206 lines with Google integration)
 - **Pipecat Registration**: ✅ Registered with Gemini service
@@ -128,7 +128,7 @@
   - ✅ `update_goal_progress(goal_id, progress_update)` - Updates goal progress
   - ✅ `list_goals(status_filter)` - Lists goals with filtering
   - ✅ `add_milestone(goal_id, milestone_description)` - Adds milestones to goals
-- **Integration Status**: ✅ Firestore storage + Notion sync via Zapier (legacy)
+- **Integration Status**: ✅ Firestore storage
 - **Dependencies**: ✅ Persistent Storage System (FR9) - Firebase Firestore
 - **Files**: `functions/goal_functions.py` ✅ (implemented)
 - **Pipecat Registration**: ✅ Registered with Gemini service
@@ -155,23 +155,7 @@
 - **Estimated Effort**: 2-3 weeks
 - **Note**: **POSTPONED** until Google integration is fully validated
 
-### Legacy External Integration Functions (FR4) 🟡
-- **Status**: 🟡 **DEPRECATED** - Zapier-based integrations to be phased out
-- **Priority**: **LOW** - Maintain for backward compatibility only
-- **Current Implementation** (Zapier-based - **DEPRECATED**):
-  - ✅ `sync_with_trello(task_data)` - **DEPRECATED** - Use Google Tasks instead
-  - ✅ `sync_with_notion(goal_data)` - **DEPRECATED** - Use Google Docs instead
-  - ✅ `create_calendar_event(event_data)` - **MIGRATED** - Now uses direct Google Calendar API
-  - ✅ `sync_with_google_calendar(task_data)` - **MIGRATED** - Now uses direct Google Calendar API
-  - ✅ `send_slack_notification(message, channel)` - **FUTURE** - For multi-provider phase
-  - ✅ `get_integration_status()` - **UPDATE** - Modify for Google API status
-- **Migration Status**:
-  - ❌ **Phase Out**: Remove Trello/Notion dependencies
-  - ❌ **Cleanup**: Remove Zapier webhook configurations
-  - ❌ **Documentation**: Update user guides for Google-only workflow
-- **Files**: `functions/integration_functions.py` (needs cleanup)
-- **Dependencies**: None (being phased out)
-- **Estimated Effort**: 1 week cleanup
+
 
 ## Medium Priority Features
 

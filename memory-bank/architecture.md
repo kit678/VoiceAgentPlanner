@@ -7,7 +7,7 @@ Call every day.# Architecture & Technical Design
 - **Framework**: Pipecat-AI (with Function Calling) for voice agent orchestration
 - **Desktop Platform**: Electron (JavaScript/TypeScript)
 - **Database**: Firebase Firestore (real-time sync)
-- **Integrations**: Zapier (Trello, Notion, Google Calendar) (planned)
+- **Integrations**: Google Workspace (Google Tasks, Google Calendar, Google Keep/Docs, Google Drive) (planned)
 - **Target OS**: Windows (primary)
 
 ### Key Architectural Decisions (ADRs)
@@ -72,7 +72,7 @@ graph TB
         V[ContextFunctions ✅] --> W[Browser Detection ✅]
         X[UtilityFunctions ✅] --> Y[System Status ✅]
         Z[GoogleWorkspaceFunctions ✅] --> AA[Complete Google APIs ✅]
-        BB[IntegrationFunctions ✅] --> CC[Legacy Zapier ✅]
+        BB[IntegrationFunctions ✅]
     end
     
     subgraph "Data Persistence Layer"
@@ -164,7 +164,7 @@ Gemini Live processes (STT+LLM+TTS) → Response played + displayed → UI hides
 ### ❌ **Missing Components (Updated)**
 1. **Advanced Command Classification & Parameter Extraction**: Robust intent recognition and data extraction for all productivity commands.
 2. **Full Firestore Integration**: Storing conversation history, assistant-specific goals/notes, and metadata for externally managed items. Implementing search and backup strategies.
-3. **External Integrations**: Zapier connections to Trello/Notion/Calendar with full data flow and error handling.
+3. **External Integrations**: Google Workspace connections to Google Tasks, Google Calendar, Google Keep/Docs, and Google Drive with full data flow and error handling.
 4. **Goal Management**: Task breakdown and prioritization logic
 5. **Daily Briefing**: Morning reviews and agenda generation
 6. **Timer System**: Focus sessions and reminders
@@ -187,8 +187,10 @@ Gemini Live processes (STT+LLM+TTS) → Response played + displayed → UI hides
 - Begin implementing search for conversation history.
 
 ### **Week 3**: External Integration
-- Configure Zapier webhook system
-- Build Trello integration for task creation
+- Build Google Tasks integration for task creation
+- Build Google Calendar integration for event creation
+- Build Google Keep/Docs integration for note-taking
+- Build Google Drive integration for file management
 - Add action dispatch and error handling
 
 ### **Week 4**: Daily Briefing

@@ -4,7 +4,7 @@
 
 **AI Productivity Agent** is a desktop-first personal assistant that transforms goal management and daily productivity. Using advanced LLM capabilities, it breaks down high-level goals into actionable tasks, prioritizes work based on deadlines and importance, and provides intelligent daily briefings.
 
-The agent features seamless voice and text interaction through hotkey activation, integrating Gemini 2.0 Flash Live API for unified speech-to-text, LLM processing, and text-to-speech capabilities. Built on a seven-node architecture (LLM, Tool, Control, Memory, Input, Guardrail, Fallback), it is designed to connect with Trello, Notion, and Google Calendar via Zapier for comprehensive workflow management (external integrations planned for future releases).
+The agent features seamless voice and text interaction through hotkey activation, integrating Gemini 2.0 Flash Live API for unified speech-to-text, LLM processing, and text-to-speech capabilities. Built on a seven-node architecture (LLM, Tool, Control, Memory, Input, Guardrail, Fallback), it is designed for comprehensive workflow management through direct integration with Google Workspace services.
 
 Targeting busy professionals and students, it reduces cognitive load by preventing important tasks from falling through cracks while maintaining an intuitive, minimalist interface that fits naturally into existing workflows.
 
@@ -53,10 +53,11 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
 * **FR3: Daily Briefing & Review**
     * **FR3.1**: On the first interaction of the day, the agent shall provide a summary of tasks accomplished and not accomplished from the previous day.
     * **FR3.2**: Following the review, the agent shall present a prioritized agenda for the current day, aligned with the user's overarching goals.
-* **FR4: Integrations (via Zapier)**
-    * **FR4.1**: Agent shall integrate with **Trello** (via Zapier) for task management (create, update, mark complete).
-    * **FR4.2**: Agent shall integrate with **Notion** (via Zapier) for note-taking and information storage.
-    * **FR4.3**: Agent shall integrate with **Google Calendar** (via Zapier) for setting events, deadlines, and reminders.
+* **FR4: Google Workspace Integration**
+    * **FR4.1**: Agent shall integrate with **Google Tasks** for task management (create, update, mark complete).
+    * **FR4.2**: Agent shall integrate with **Google Keep/Docs** for note-taking and information storage.
+    * **FR4.3**: Agent shall integrate with **Google Calendar** for setting events, deadlines, and reminders.
+    * **FR4.4**: Agent shall integrate with **Google Drive** for file storage and management.
 * [x] **FR6: Command Processing & Intent Classification**
     * **FR6.1**: Agent shall classify voice commands into actionable intents. This will be handled by an `IntentParser` module, ideally refactored as a Pipecat `FrameProcessor`.
     * **FR6.2**: Agent shall extract parameters from natural language commands (dates, times, task descriptions, priority levels).
@@ -101,7 +102,7 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
     * **FR12.5**: Agent shall celebrate goal achievements and milestones.
 * **FR5: Seven Node Blueprint Application** (Internal architectural guidance for the coding assistant)
     * **LLM Node**: Core for NLU, planning, prioritization, summarization.
-    * **Tool Node**: Interface with Zapier, internal timers, note-taking functions.
+    * **Tool Node**: Interface with Google Workspace APIs, internal timers, note-taking functions.
     * **Control Node**: Manage daily briefings, prioritization logic, command routing.
     * **Memory Node**: Store internal state (e.g., conversation history, assistant-specific goals/notes) and metadata (references to externally managed tasks/events) in Firebase Firestore. Manages user preferences and daily progress. It will leverage Firestore's capabilities for:
         - Real-time sync capabilities
@@ -110,7 +111,7 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
     * **User Input Node**: Handle voice/text from the desktop application.
     * **Guardrail Node**: Validate inputs, ensure consistent outputs.
     * **Fallback Node**: Manage errors from API calls or internal processes with:
-        - Exponential backoff retry for Zapier failures
+        - Exponential backoff retry for Google API failures
         - Local command queue during cloud outages
         - User notification system for critical failures
 
@@ -121,16 +122,12 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
 * **Voice Processing**: Gemini 2.0 Flash Live API (handles STT, LLM, and TTS in one service - free tier)
 - **Command Processing**: The system must accurately parse natural language commands and execute corresponding actions using Pipecat's function calling capabilities (e.g., "create a task," "set a reminder").
 * **Cloud Storage for Memory**: Firebase Firestore
-* **Integrations Layer**: Direct API Integration (replacing Zapier)
+* **Integrations Layer**: Direct API Integration with Google Workspace
     * **Primary Google Workspace Integration** (Single Sign-On):
-        * **Task Management**: Google Tasks/Kanbanchi
+        * **Task Management**: Google Tasks
         * **Calendar/Reminders**: Google Calendar
         * **Note-Taking**: Google Keep/Docs
         * **File Storage**: Google Drive
-    * **Future Alternative Providers** (User-Selectable):
-        * **Task Management**: JIRA, Todoist
-        * **Note-Taking**: Notion
-        * **Communication**: Slack
 * **Platform - Initial Focus**: Windows-first desktop application using Electron
 * **Framework Rationale**:
     - Electron enables rapid MVP development using web technologies (HTML/CSS/JS)
@@ -184,7 +181,7 @@ Targeting busy professionals and students, it reduces cognitive load by preventi
 ## Unanswered Questions
 
 ### Technical Implementation
-- [ ] What's our strategy for handling prolonged Zapier API outages?
+- [ ] What's our strategy for handling prolonged Google API outages?
 - **Voice Input Validation**: How will the system handle ambiguous or unclear voice commands? (Addressed by Pipecat's function calling and schema validation)
 - [ ] How will we implement offline capabilities for core functionality?
 - [ ] What performance monitoring will we implement for Electron main process?
