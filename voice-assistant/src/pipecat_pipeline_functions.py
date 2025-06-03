@@ -703,10 +703,12 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
     
     async def handle_list_google_calendar_events(params: FunctionCallParams):
         logger.info(f"=== handle_list_google_calendar_events called with new API ===")
-        result = await google_workspace_functions.list_calendar_events(
+        # Reverting to positional arguments as the keyword argument 'time_min' caused an unexpected error,
+        # despite the function definition appearing to accept it. This suggests a runtime discrepancy.
+        result = await google_workspace_functions.list_google_calendar_events(
             params.arguments.get('time_min'), 
             params.arguments.get('time_max'), 
-            params.arguments.get('max_results', 10)
+            params.arguments.get('max_results', 10) # Defaulting max_results here as well
         )
         await params.result_callback(result)
     

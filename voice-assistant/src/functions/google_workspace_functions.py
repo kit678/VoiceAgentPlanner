@@ -11,1008 +11,561 @@ import sys
 
 from auth.google_oauth import GoogleOAuthManager
 from firebase.firestore_service import FirestoreService
+# Add missing import for MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload
+
 
 class GoogleWorkspaceFunctions:
     """Google Workspace API integration functions for Tasks, Calendar, Drive, and Docs"""
-    
+
     def __init__(self):
         self.oauth_manager = GoogleOAuthManager()
         self.firestore = FirestoreService()
-        self._services = {}
+        self._services: Dict[str, Any] = {}
         logger.info("GoogleWorkspaceFunctions initialized")
-    
+
+    # ---------------------------------------------------------------------
+    #  LOW-LEVEL SERVICE HELPER
+    # ---------------------------------------------------------------------
     async def _get_service(self, service_name: str):
-        """Get authenticated Google API service client
-        
+        """
+        Lazily fetch and cache an authenticated Google API service client.
+
         Args:
-            service_name: Name of the service ('tasks', 'calendar', 'drive', 'docs')
-            
-        Returns:
-            Authenticated service client
+            service_name: 'tasks' | 'calendar' | 'drive' | 'docs'
         """
         logger.info(f"=== GET SERVICE: {service_name} ===")
-        
+
         if service_name not in self._services:
             try:
-                logger.info(f"Service '{service_name}' not cached, initializing...")
-                
-                # Check authentication first
-                logger.info("Checking OAuth authentication status...")
+                logger.info("Checking OAuth authentication status…")
                 is_authenticated = await self.oauth_manager.is_authenticated()
-                logger.info(f"Authentication status: {is_authenticated}")
-                
                 if not is_authenticated:
-                    logger.error("❌ User is not authenticated with Google OAuth")
-                    raise Exception("User is not authenticated with Google OAuth")
-                
-                if service_name == 'tasks':
-                    logger.info("Getting Google Tasks service...")
-                    self._services[service_name] = await self.oauth_manager.get_tasks_service()
-                elif service_name == 'calendar':
-                    logger.info("Getting Google Calendar service...")
-                    self._services[service_name] = await self.oauth_manager.get_calendar_service()
-                elif service_name == 'drive':
-                    logger.info("Getting Google Drive service...")
-                    self._services[service_name] = await self.oauth_manager.get_drive_service()
-                elif service_name == 'docs':
-                    logger.info("Getting Google Docs service...")
-                    self._services[service_name] = await self.oauth_manager.get_docs_service()
-                else:
+                    raise RuntimeError(
+                        "User is not authenticated with Google OAuth"
+                    )
+
+                fetcher = {
+                    "tasks": self.oauth_manager.get_tasks_service,
+                    "calendar": self.oauth_manager.get_calendar_service,
+                    "drive": self.oauth_manager.get_drive_service,
+                    "docs": self.oauth_manager.get_docs_service,
+                }.get(service_name)
+
+                if fetcher is None:
                     raise ValueError(f"Unknown service: {service_name}")
-                    
-                logger.info(f"✅ Successfully initialized {service_name} service")
-            except Exception as e:
-                logger.error(f"❌ Failed to initialize {service_name} service: {e}")
-                logger.error(f"Exception type: {type(e).__name__}")
-                import traceback
-                logger.error(f"Traceback: {traceback.format_exc()}")
+
+                self._services[service_name] = await fetcher()
+                logger.info(f"✅  {service_name} service initialised")
+
+            except Exception as exc:
+                logger.error(f"❌ Failed to init {service_name}: {exc!r}")
                 raise
         else:
             logger.info(f"Using cached {service_name} service")
-                
-        return self._services[service_name]
-    
-    # ==================== GOOGLE TASKS INTEGRATION ====================
-    
-    async def create_google_task(self, task_name: str, due_date: Optional[str] = None, 
-                               priority: str = "medium", list_id: Optional[str] = None) -> Dict[str, Any]:
-        """Create a task in Google Tasks
-        
-        Args:
-            task_name: Name of the task
-            due_date: Due date in ISO format (YYYY-MM-DD) or None
-            priority: Priority level (high, medium, low)
-            list_id: Google Tasks list ID (uses default if None)
-            
-        Returns:
-            Dict with success status and task details
-        """
-        logger.info(f"=== CREATE GOOGLE TASK START ===")
-        logger.info(f"Parameters: task_name='{task_name}', due_date='{due_date}', priority='{priority}', list_id='{list_id}'")
-        
-        try:
-            logger.info("Getting Google Tasks service...")
-            service = await self._get_service('tasks')
-            logger.info("Google Tasks service obtained successfully")
-            
-            # Get default task list if none specified
-            if not list_id:
-                logger.info("No list_id provided, fetching default task list...")
-                task_lists = service.tasklists().list().execute()
-                logger.info(f"Retrieved task lists: {task_lists}")
-                list_id = task_lists['items'][0]['id'] if task_lists.get('items') else None
-                logger.info(f"Using default list_id: {list_id}")
-                
-            if not list_id:
-                logger.error("No task lists found in Google Tasks")
-                return {
-                    "success": False,
-                    "message": "No task lists found in Google Tasks"
-                }
-            
-            # Prepare task data
-            task_body = {
-                'title': task_name,
-                'notes': f"Priority: {priority}\nCreated by Voice Assistant"
-            }
-            logger.info(f"Prepared task body: {task_body}")
-            
-            # Add due date if provided
-            if due_date:
-                try:
-                    # Convert to RFC 3339 format
-                    due_datetime = datetime.fromisoformat(due_date.replace('Z', '+00:00'))
-                    task_body['due'] = due_datetime.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                    logger.info(f"Added due date to task: {task_body['due']}")
-                except ValueError:
-                    logger.warning(f"Invalid due date format: {due_date}")
-            
-            # Create task
-            logger.info(f"Creating task in Google Tasks with list_id: {list_id}")
-            result = service.tasks().insert(tasklist=list_id, body=task_body).execute()
-            logger.info(f"Google Tasks API response: {result}")
-            
-            # Store in Firestore for local tracking
-            task_data = {
-                'google_task_id': result['id'],
-                'google_list_id': list_id,
-                'title': task_name,
-                'priority': priority,
-                'due_date': due_date,
-                'status': 'needsAction',
-                'created_at': datetime.now().isoformat(),
-                'synced_with_google': True
-            }
-            
-            logger.info(f"Storing task in Firestore: {task_data}")
-            doc_ref = await self.firestore.add_document('tasks', task_data)
-            logger.info(f"Firestore document created with ID: {doc_ref.id}")
-            
-            logger.info(f"✅ Successfully created Google Task: {task_name}")
-            return {
-                "success": True,
-                "message": f"Task '{task_name}' created successfully",
-                "task_id": result['id'],
-                "local_id": doc_ref.id,
-                "task_data": result
-            }
-            
-        except HttpError as e:
-            logger.error(f"❌ Google Tasks API error: {e}")
-            logger.error(f"HTTP Error details: status={e.resp.status}, reason={e.resp.reason}")
-            return {
-                "success": False,
-                "message": f"Google Tasks API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"❌ Error creating Google Task: {e}")
-            logger.error(f"Exception type: {type(e).__name__}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
-            return {
-                "success": False,
-                "message": f"Error creating task: {str(e)}"
-            }
-    
-    async def list_google_tasks(self, list_id: Optional[str] = None, 
-                              status_filter: str = "all") -> Dict[str, Any]:
-        """List tasks from Google Tasks
-        
-        Args:
-            list_id: Google Tasks list ID (uses default if None)
-            status_filter: Filter by status ('all', 'needsAction', 'completed')
-            
-        Returns:
-            Dict with success status and tasks list, or a string message for TTS.
-        """
-        logger.info(f"=== LIST GOOGLE TASKS START ===")
-        logger.info(f"Parameters: list_id='{list_id}', status_filter='{status_filter}'")
-        try:
-            service = await self._get_service('tasks')
-            logger.info("Google Tasks service obtained successfully")
-            
-            # Fetch default task list if not provided
-            task_lists = service.tasklists().list().execute()
-            if task_lists.get('items'):
-                list_id = task_lists['items'][0]['id'] 
-                logger.info(f"No list_id provided, using default: {list_id}")
-            else:
-                logger.error("No task lists found for user.")
-                return {
-                    "success": False,
-                    "message": "You don't have any task lists in Google Tasks."
-                }
-            
-            # Build query parameters for the API call
-            # Always fetch all tasks from the API initially, then filter locally
-            api_params = {
-                'tasklist': list_id,
-                'showCompleted': True, # Always get completed tasks from API
-                'showHidden': True,    # Always get hidden tasks from API
-                'maxResults': 100      # Fetch a reasonable number for local filtering
-            }
-            
-            logger.info(f"Fetching Google Tasks with API params: {api_params}")
-            result = service.tasks().list(**api_params).execute()
-            tasks = result.get('items', [])
-            logger.info(f"Retrieved {len(tasks)} raw tasks from API for list_id: {list_id}")
-            
-            # Filter by status locally if needed
-            if status_filter != "all":
-                filtered_tasks = [task for task in tasks if task.get('status') == status_filter]
-                logger.info(f"Filtered tasks by status '{status_filter}', count: {len(filtered_tasks)}")
-            else:
-                filtered_tasks = tasks # No local status filtering needed
-            
-            logger.info(f"Returning {len(filtered_tasks)} Google Tasks after filtering.")
-            return {
-                "success": True,
-                "message": f"Retrieved {len(filtered_tasks)} tasks",
-                "tasks": filtered_tasks,
-                "count": len(filtered_tasks)
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Tasks API error in list_google_tasks: {e.content}") # Log content for more details
-            return {
-                "success": False,
-                "message": f"Google Tasks API error: {e.resp.status} - {e.reason}"
-            }
-        except Exception as e:
-            logger.error(f"Error listing Google Tasks: {e}", exc_info=True)
-            return {
-                "success": False,
-                "message": f"Error listing tasks: {str(e)}"
-            }
-    
-    async def update_google_task(self, task_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """Update an existing Google Task
-        
-        Args:
-            task_id: Google Task ID
-            updates: Dictionary of updates (title, notes, due, status)
-            
-        Returns:
-            Dict with success status and updated task details
-        """
-        try:
-            service = await self._get_service('tasks')
-            
-            # Get current task to preserve existing data
-            current_task = service.tasks().get(tasklist='@default', task=task_id).execute()
-            
-            # Apply updates
-            if 'title' in updates:
-                current_task['title'] = updates['title']
-            if 'notes' in updates:
-                current_task['notes'] = updates['notes']
-            if 'due_date' in updates and updates['due_date']:
-                try:
-                    due_datetime = datetime.fromisoformat(updates['due_date'].replace('Z', '+00:00'))
-                    current_task['due'] = due_datetime.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
-                except ValueError:
-                    logger.warning(f"Invalid due date format: {updates['due_date']}")
-            if 'status' in updates:
-                current_task['status'] = updates['status']
-            
-            # Update task
-            result = service.tasks().update(
-                tasklist='@default', 
-                task=task_id, 
-                body=current_task
-            ).execute()
-            
-            # Update local Firestore record
-            await self.firestore.update_document_by_field(
-                'tasks', 
-                'google_task_id', 
-                task_id, 
-                {
-                    **updates,
-                    'updated_at': datetime.now().isoformat(),
-                    'synced_with_google': True
-                }
-            )
-            
-            logger.info(f"Updated Google Task: {task_id}")
-            return {
-                "success": True,
-                "message": "Task updated successfully",
-                "task_data": result
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Tasks API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Tasks API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error updating Google Task: {e}")
-            return {
-                "success": False,
-                "message": f"Error updating task: {str(e)}"
-            }
-    
-    async def complete_google_task(self, task_id: str) -> Dict[str, Any]:
-        """Mark a Google Task as complete
-        
-        Args:
-            task_id: Google Task ID
-            
-        Returns:
-            Dict with success status
-        """
-        return await self.update_google_task(task_id, {'status': 'completed'})
-    
-    async def delete_google_task(self, task_id: str) -> Dict[str, Any]:
-        """Delete a Google Task
-        
-        Args:
-            task_id: Google Task ID
-            
-        Returns:
-            Dict with success status
-        """
-        try:
-            service = await self._get_service('tasks')
-            
-            # Delete task
-            service.tasks().delete(tasklist='@default', task=task_id).execute()
-            
-            # Delete from local Firestore
-            await self.firestore.delete_document_by_field(
-                'tasks', 
-                'google_task_id', 
-                task_id
-            )
-            
-            logger.info(f"Deleted Google Task: {task_id}")
-            return {
-                "success": True,
-                "message": "Task deleted successfully"
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Tasks API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Tasks API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error deleting Google Task: {e}")
-            return {
-                "success": False,
-                "message": f"Error deleting task: {str(e)}"
-            }
-    
-    # ==================== GOOGLE CALENDAR INTEGRATION ====================
-    
-    async def create_google_calendar_event(self, title: str, start_time: str, 
-                                         end_time: str, description: str = "") -> Dict[str, Any]:
-        """Create a calendar event in Google Calendar
-        
-        Args:
-            title: Event title
-            start_time: Start time in ISO format
-            end_time: End time in ISO format
-            description: Event description
-            
-        Returns:
-            Dict with success status and event details
-        """
-        try:
-            service = await self._get_service('calendar')
-            
-            # Prepare event data
-            event_body = {
-                'summary': title,
-                'description': f"{description}\n\nCreated by Voice Assistant",
-                'start': {
-                    'dateTime': start_time,
-                    'timeZone': 'UTC'
-                },
-                'end': {
-                    'dateTime': end_time,
-                    'timeZone': 'UTC'
-                }
-            }
-            
-            # Create event
-            result = service.events().insert(calendarId='primary', body=event_body).execute()
-            
-            # Store in Firestore
-            event_data = {
-                'google_event_id': result['id'],
-                'title': title,
-                'description': description,
-                'start_time': start_time,
-                'end_time': end_time,
-                'created_at': datetime.now().isoformat(),
-                'synced_with_google': True
-            }
-            
-            doc_ref = await self.firestore.add_document('calendar_events', event_data)
-            
-            logger.info(f"Created Google Calendar event: {title}")
-            return {
-                "success": True,
-                "message": f"Event '{title}' created successfully",
-                "event_id": result['id'],
-                "local_id": doc_ref.id,
-                "event_data": result
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Calendar API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Calendar API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error creating Google Calendar event: {e}")
-            return {
-                "success": False,
-                "message": f"Error creating event: {str(e)}"
-            }
-    
-    async def list_google_calendar_events(self, start_date: str, end_date: str) -> Dict[str, Any]:
-        """List calendar events from Google Calendar
-        
-        Args:
-            start_date: Start date in ISO format
-            end_date: End date in ISO format
-            
-        Returns:
-            Dict with success status and events list
-        """
-        try:
-            service = await self._get_service('calendar')
-            
-            # Get events
-            result = service.events().list(
-                calendarId='primary',
-                timeMin=start_date,
-                timeMax=end_date,
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
-            
-            events = result.get('items', [])
-            
-            logger.info(f"Retrieved {len(events)} Google Calendar events")
-            return {
-                "success": True,
-                "message": f"Retrieved {len(events)} events",
-                "events": events,
-                "count": len(events)
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Calendar API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Calendar API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error listing Google Calendar events: {e}")
-            return {
-                "success": False,
-                "message": f"Error listing events: {str(e)}"
-            }
-    
-    async def update_google_calendar_event(self, event_id: str, updates: Dict[str, Any]) -> Dict[str, Any]:
-        """Update a Google Calendar event
-        
-        Args:
-            event_id: Google Calendar event ID
-            updates: Dictionary of updates
-            
-        Returns:
-            Dict with success status and updated event details
-        """
-        try:
-            service = await self._get_service('calendar')
-            
-            # Get current event
-            current_event = service.events().get(calendarId='primary', eventId=event_id).execute()
-            
-            # Apply updates
-            if 'title' in updates:
-                current_event['summary'] = updates['title']
-            if 'description' in updates:
-                current_event['description'] = updates['description']
-            if 'start_time' in updates:
-                current_event['start']['dateTime'] = updates['start_time']
-            if 'end_time' in updates:
-                current_event['end']['dateTime'] = updates['end_time']
-            
-            # Update event
-            result = service.events().update(
-                calendarId='primary',
-                eventId=event_id,
-                body=current_event
-            ).execute()
-            
-            # Update local record
-            await self.firestore.update_document_by_field(
-                'calendar_events',
-                'google_event_id',
-                event_id,
-                {
-                    **updates,
-                    'updated_at': datetime.now().isoformat(),
-                    'synced_with_google': True
-                }
-            )
-            
-            logger.info(f"Updated Google Calendar event: {event_id}")
-            return {
-                "success": True,
-                "message": "Event updated successfully",
-                "event_data": result
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Calendar API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Calendar API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error updating Google Calendar event: {e}")
-            return {
-                "success": False,
-                "message": f"Error updating event: {str(e)}"
-            }
-    
-    async def delete_google_calendar_event(self, event_id: str) -> Dict[str, Any]:
-        """Delete a Google Calendar event
-        
-        Args:
-            event_id: Google Calendar event ID
-            
-        Returns:
-            Dict with success status
-        """
-        try:
-            service = await self._get_service('calendar')
-            
-            # Delete event
-            service.events().delete(calendarId='primary', eventId=event_id).execute()
-            
-            # Delete from local Firestore
-            await self.firestore.delete_document_by_field(
-                'calendar_events',
-                'google_event_id',
-                event_id
-            )
-            
-            logger.info(f"Deleted Google Calendar event: {event_id}")
-            return {
-                "success": True,
-                "message": "Event deleted successfully"
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Calendar API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Calendar API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error deleting Google Calendar event: {e}")
-            return {
-                "success": False,
-                "message": f"Error deleting event: {str(e)}"
-            }
-    
-    # ==================== GOOGLE DRIVE INTEGRATION ====================
-    
-    async def upload_to_google_drive(self, file_path: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
-        """Upload a file to Google Drive
-        
-        Args:
-            file_path: Local file path to upload
-            folder_id: Google Drive folder ID (uploads to root if None)
-            
-        Returns:
-            Dict with success status and file details
-        """
-        try:
-            service = await self._get_service('drive')
-            
-            if not os.path.exists(file_path):
-                return {
-                    "success": False,
-                    "message": f"File not found: {file_path}"
-                }
-            
-            # Prepare file metadata
-            file_name = os.path.basename(file_path)
-            file_metadata = {'name': file_name}
-            
-            if folder_id:
-                file_metadata['parents'] = [folder_id]
-            
-            # Upload file
-            from googleapiclient.http import MediaFileUpload
-            media = MediaFileUpload(file_path)
-            
-            result = service.files().create(
-                body=file_metadata,
-                media_body=media,
-                fields='id,name,size,mimeType,createdTime'
-            ).execute()
-            
-            # Store in Firestore
-            file_data = {
-                'google_file_id': result['id'],
-                'name': result['name'],
-                'size': result.get('size'),
-                'mime_type': result.get('mimeType'),
-                'folder_id': folder_id,
-                'local_path': file_path,
-                'uploaded_at': datetime.now().isoformat(),
-                'synced_with_google': True
-            }
-            
-            doc_ref = await self.firestore.add_document('drive_files', file_data)
-            
-            logger.info(f"Uploaded file to Google Drive: {file_name}")
-            return {
-                "success": True,
-                "message": f"File '{file_name}' uploaded successfully",
-                "file_id": result['id'],
-                "local_id": doc_ref.id,
-                "file_data": result
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Drive API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Drive API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error uploading to Google Drive: {e}")
-            return {
-                "success": False,
-                "message": f"Error uploading file: {str(e)}"
-            }
-    
-    async def list_google_drive_files(self, folder_id: Optional[str] = None, 
-                                    file_type: Optional[str] = None) -> Dict[str, Any]:
-        """List files from Google Drive
-        
-        Args:
-            folder_id: Google Drive folder ID (lists root if None)
-            file_type: MIME type filter (e.g., 'application/pdf')
-            
-        Returns:
-            Dict with success status and files list
-        """
-        try:
-            service = await self._get_service('drive')
-            
-            # Build query
-            query_parts = []
-            if folder_id:
-                query_parts.append(f"'{folder_id}' in parents")
-            if file_type:
-                query_parts.append(f"mimeType='{file_type}'")
-            
-            query = ' and '.join(query_parts) if query_parts else None
-            
-            # Get files
-            result = service.files().list(
-                q=query,
-                fields='files(id,name,size,mimeType,createdTime,modifiedTime)',
-                orderBy='modifiedTime desc'
-            ).execute()
-            
-            files = result.get('files', [])
-            
-            logger.info(f"Retrieved {len(files)} Google Drive files")
-            return {
-                "success": True,
-                "message": f"Retrieved {len(files)} files",
-                "files": files,
-                "count": len(files)
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Drive API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Drive API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error listing Google Drive files: {e}")
-            return {
-                "success": False,
-                "message": f"Error listing files: {str(e)}"
-            }
-    
-    async def download_from_google_drive(self, file_id: str, local_path: str) -> Dict[str, Any]:
-        """Download a file from Google Drive
-        
-        Args:
-            file_id: Google Drive file ID
-            local_path: Local path to save the file
-            
-        Returns:
-            Dict with success status
-        """
-        try:
-            service = await self._get_service('drive')
-            
-            # Get file metadata
-            file_metadata = service.files().get(fileId=file_id).execute()
-            
-            # Download file content
-            request = service.files().get_media(fileId=file_id)
-            
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            
-            # Save file
-            with open(local_path, 'wb') as f:
-                downloader = MediaIoBaseDownload(f, request)
-                done = False
-                while done is False:
-                    status, done = downloader.next_chunk()
-            
-            logger.info(f"Downloaded file from Google Drive: {file_metadata['name']}")
-            return {
-                "success": True,
-                "message": f"File '{file_metadata['name']}' downloaded successfully",
-                "local_path": local_path,
-                "file_name": file_metadata['name']
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Drive API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Drive API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error downloading from Google Drive: {e}")
-            return {
-                "success": False,
-                "message": f"Error downloading file: {str(e)}"
-            }
-    
-    async def create_google_drive_folder(self, folder_name: str, parent_id: Optional[str] = None) -> Dict[str, Any]:
-        """Create a folder in Google Drive
-        
-        Args:
-            folder_name: Name of the folder to create
-            parent_id: Parent folder ID (creates in root if None)
-            
-        Returns:
-            Dict with success status and folder details
-        """
-        try:
-            service = await self._get_service('drive')
-            
-            # Prepare folder metadata
-            folder_metadata = {
-                'name': folder_name,
-                'mimeType': 'application/vnd.google-apps.folder'
-            }
-            
-            if parent_id:
-                folder_metadata['parents'] = [parent_id]
-            
-            # Create folder
-            result = service.files().create(
-                body=folder_metadata,
-                fields='id,name,createdTime'
-            ).execute()
-            
-            # Store in Firestore
-            folder_data = {
-                'google_folder_id': result['id'],
-                'name': folder_name,
-                'parent_id': parent_id,
-                'created_at': datetime.now().isoformat(),
-                'synced_with_google': True
-            }
-            
-            doc_ref = await self.firestore.add_document('drive_folders', folder_data)
-            
-            logger.info(f"Created Google Drive folder: {folder_name}")
-            return {
-                "success": True,
-                "message": f"Folder '{folder_name}' created successfully",
-                "folder_id": result['id'],
-                "local_id": doc_ref.id,
-                "folder_data": result
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Drive API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Drive API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error creating Google Drive folder: {e}")
-            return {
-                "success": False,
-                "message": f"Error creating folder: {str(e)}"
-            }
-    
-    # ==================== GOOGLE DOCS INTEGRATION ====================
-    
-    async def create_google_doc(self, title: str, content: str = "") -> Dict[str, Any]:
-        """Create a new Google Doc
-        
-        Args:
-            title: Document title
-            content: Initial document content
-            
-        Returns:
-            Dict with success status and document details
-        """
-        try:
-            # Use Drive service to create the document
-            drive_service = await self._get_service('drive')
-            
-            # Create document
-            doc_metadata = {
-                'name': title,
-                'mimeType': 'application/vnd.google-apps.document'
-            }
-            
-            result = drive_service.files().create(body=doc_metadata).execute()
-            doc_id = result['id']
-            
-            # Add content if provided
-            if content:
-                docs_service = await self._get_service('docs')
-                requests = [{
-                    'insertText': {
-                        'location': {'index': 1},
-                        'text': content
-                    }
-                }]
-                
-                docs_service.documents().batchUpdate(
-                    documentId=doc_id,
-                    body={'requests': requests}
-                ).execute()
-            
-            # Store in Firestore
-            doc_data = {
-                'google_doc_id': doc_id,
-                'title': title,
-                'content_preview': content[:200] if content else '',
-                'created_at': datetime.now().isoformat(),
-                'synced_with_google': True
-            }
-            
-            doc_ref = await self.firestore.add_document('google_docs', doc_data)
-            
-            logger.info(f"Created Google Doc: {title}")
-            return {
-                "success": True,
-                "message": f"Document '{title}' created successfully",
-                "doc_id": doc_id,
-                "local_id": doc_ref.id,
-                "doc_url": f"https://docs.google.com/document/d/{doc_id}/edit"
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Docs API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Docs API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error creating Google Doc: {e}")
-            return {
-                "success": False,
-                "message": f"Error creating document: {str(e)}"
-            }
-    
-    async def update_google_doc(self, doc_id: str, content: str) -> Dict[str, Any]:
-        """Update Google Doc content
-        
-        Args:
-            doc_id: Google Doc ID
-            content: New content to append or replace
-            
-        Returns:
-            Dict with success status
-        """
-        try:
-            service = await self._get_service('docs')
-            
-            # Get current document to find end index
-            doc = service.documents().get(documentId=doc_id).execute()
-            doc_content = doc.get('body', {}).get('content', [])
-            
-            # Find the end index
-            end_index = 1
-            for element in doc_content:
-                if 'endIndex' in element:
-                    end_index = max(end_index, element['endIndex'])
-            
-            # Append content
-            requests = [{
-                'insertText': {
-                    'location': {'index': end_index - 1},
-                    'text': f"\n\n{content}"
-                }
-            }]
-            
-            service.documents().batchUpdate(
-                documentId=doc_id,
-                body={'requests': requests}
-            ).execute()
-            
-            # Update local record
-            await self.firestore.update_document_by_field(
-                'google_docs',
-                'google_doc_id',
-                doc_id,
-                {
-                    'content_preview': content[:200],
-                    'updated_at': datetime.now().isoformat(),
-                    'synced_with_google': True
-                }
-            )
-            
-            logger.info(f"Updated Google Doc: {doc_id}")
-            return {
-                "success": True,
-                "message": "Document updated successfully",
-                "doc_url": f"https://docs.google.com/document/d/{doc_id}/edit"
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Docs API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Docs API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error updating Google Doc: {e}")
-            return {
-                "success": False,
-                "message": f"Error updating document: {str(e)}"
-            }
-    
-    async def read_google_doc(self, doc_id: str) -> Dict[str, Any]:
-        """Read content from a Google Doc
-        
-        Args:
-            doc_id: Google Doc ID
-            
-        Returns:
-            Dict with success status and document content
-        """
-        try:
-            service = await self._get_service('docs')
-            
-            # Get document
-            doc = service.documents().get(documentId=doc_id).execute()
-            
-            # Extract text content
-            content = ""
-            doc_content = doc.get('body', {}).get('content', [])
-            
-            for element in doc_content:
-                if 'paragraph' in element:
-                    paragraph = element['paragraph']
-                    for text_run in paragraph.get('elements', []):
-                        if 'textRun' in text_run:
-                            content += text_run['textRun'].get('content', '')
-            
-            logger.info(f"Read Google Doc: {doc_id}")
-            return {
-                "success": True,
-                "message": "Document read successfully",
-                "title": doc.get('title', 'Untitled'),
-                "content": content.strip(),
-                "doc_url": f"https://docs.google.com/document/d/{doc_id}/edit"
-            }
-            
-        except HttpError as e:
-            logger.error(f"Google Docs API error: {e}")
-            return {
-                "success": False,
-                "message": f"Google Docs API error: {e}"
-            }
-        except Exception as e:
-            logger.error(f"Error reading Google Doc: {e}")
-            return {
-                "success": False,
-                "message": f"Error reading document: {str(e)}"
-            }
 
-# Add missing import for MediaIoBaseDownload
-from googleapiclient.http import MediaIoBaseDownload
+        return self._services[service_name]
+
+    # =====================================================================
+    #  GOOGLE TASKS
+    # =====================================================================
+    async def create_google_task(
+        self,
+        task_name: str,
+        due_date: Optional[str] = None,
+        priority: str = "medium",
+        list_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a task in Google Tasks."""
+        logger.info(f"=== CREATE GOOGLE TASK: {task_name} ===")
+        service = await self._get_service("tasks")
+
+        # Resolve list ID
+        if not list_id:
+            task_lists = service.tasklists().list().execute()
+            list_id = task_lists["items"][0]["id"] if task_lists.get("items") else None
+            if not list_id:
+                return {
+                    "success": False,
+                    "message": "No task lists found in Google Tasks",
+                }
+
+        body: Dict[str, Any] = {
+            "title": task_name,
+            "notes": f"Priority: {priority}\nCreated by Voice Assistant",
+        }
+        if due_date:
+            try:
+                due_dt = datetime.fromisoformat(due_date.replace("Z", "+00:00"))
+                body["due"] = due_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            except ValueError:
+                logger.warning("Invalid due-date format supplied; skipping")
+
+        result = service.tasks().insert(tasklist=list_id, body=body).execute()
+
+        # Persist locally
+        doc_ref = await self.firestore.add_document(
+            "tasks",
+            {
+                "google_task_id": result["id"],
+                "google_list_id": list_id,
+                "title": task_name,
+                "priority": priority,
+                "due_date": due_date,
+                "status": "needsAction",
+                "created_at": datetime.now().isoformat(),
+                "synced_with_google": True,
+            },
+        )
+
+        return {
+            "success": True,
+            "message": f"Task '{task_name}' created successfully",
+            "task_id": result["id"],
+            "local_id": doc_ref.id,
+            "task_data": result,
+        }
+
+    async def list_google_tasks(
+        self,
+        list_id: Optional[str] = None,
+        status_filter: str = "needsAction",
+        max_results: int = 20,
+    ) -> Dict[str, Any]:
+        """List tasks in the requested Google Tasks list."""
+        logger.info("=== LIST GOOGLE TASKS ===")
+        service = await self._get_service("tasks")
+
+        if not list_id:
+            task_lists = service.tasklists().list().execute()
+            if not task_lists.get("items"):
+                return {
+                    "success": False,
+                    "message": "No task lists found for user.",
+                }
+            list_id = task_lists["items"][0]["id"]
+
+        show_completed = None
+        if status_filter == "completed":
+            show_completed = True
+        elif status_filter == "needsAction":
+            show_completed = False
+
+        tasks = (
+            service.tasks()
+            .list(
+                tasklist=list_id,
+                showCompleted=show_completed,
+                showHidden=True,
+                maxResults=max_results,
+            )
+            .execute()
+            .get("items", [])
+        )
+
+        return {
+            "success": True,
+            "tasks": tasks,
+            "message": f"Retrieved {len(tasks)} tasks",
+        }
+
+    async def update_google_task(
+        self, task_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Update a Google Task."""
+        service = await self._get_service("tasks")
+        current = service.tasks().get(tasklist="@default", task=task_id).execute()
+
+        if "title" in updates:
+            current["title"] = updates["title"]
+        if "notes" in updates:
+            current["notes"] = updates["notes"]
+        if "due_date" in updates and updates["due_date"]:
+            try:
+                due_dt = datetime.fromisoformat(updates["due_date"].replace("Z", "+00:00"))
+                current["due"] = due_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            except ValueError:
+                logger.warning("Invalid due-date while updating task")
+
+        if "status" in updates:
+            current["status"] = updates["status"]
+
+        result = (
+            service.tasks()
+            .update(tasklist="@default", task=task_id, body=current)
+            .execute()
+        )
+
+        await self.firestore.update_document_by_field(
+            "tasks",
+            "google_task_id",
+            task_id,
+            {**updates, "updated_at": datetime.now().isoformat(), "synced_with_google": True},
+        )
+
+        return {"success": True, "message": "Task updated", "task_data": result}
+
+    async def complete_google_task(self, task_id: str) -> Dict[str, Any]:
+        return await self.update_google_task(task_id, {"status": "completed"})
+
+    async def delete_google_task(self, task_id: str) -> Dict[str, Any]:
+        """Delete a Google Task."""
+        service = await self._get_service("tasks")
+        service.tasks().delete(tasklist="@default", task=task_id).execute()
+        await self.firestore.delete_document_by_field("tasks", "google_task_id", task_id)
+        return {"success": True, "message": "Task deleted"}
+
+    # =====================================================================
+    #  GOOGLE CALENDAR
+    # =====================================================================
+    async def create_calendar_event(
+        self,
+        summary: str,
+        start_time: str,
+        end_time: str,
+        description: str = "",
+        location: str = "",
+    ) -> Dict[str, Any]:
+        """
+        Original helper kept for compatibility (summary/start_time/end_time signature).
+        """
+        service = await self._get_service("calendar")
+        body = {
+            "summary": summary,
+            "location": location,
+            "description": description,
+            "start": {"dateTime": start_time, "timeZone": "UTC"},
+            "end": {"dateTime": end_time, "timeZone": "UTC"},
+        }
+        event = service.events().insert(calendarId="primary", body=body).execute()
+        return {
+            "success": True,
+            "message": f"Event '{summary}' created",
+            "event_id": event["id"],
+            "event_link": event.get("htmlLink"),
+            "event_data": event,
+        }
+
+    # Alias with a clearer name (used by many pipelines)
+    create_google_calendar_event = create_calendar_event
+
+    async def list_google_calendar_events(
+        self, time_min: str, time_max: str, max_results: int = 10
+    ) -> Dict[str, Any]:
+        """
+        List events between `time_min` and `time_max` (ISO 8601 or yyyy-mm-dd)
+        """
+        logger.info("=== LIST GOOGLE CALENDAR EVENTS ===")
+        service = await self._get_service("calendar")
+
+        # Best-effort parsing: accept full ISO or just a date.
+        try:
+            t_min = datetime.fromisoformat(time_min.replace("Z", "+00:00"))
+            t_max = datetime.fromisoformat(time_max.replace("Z", "+00:00"))
+        except ValueError:
+            t_min = datetime.strptime(time_min, "%Y-%m-%d")
+            t_max = datetime.strptime(time_max, "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59
+            )
+
+        events = (
+            service.events()
+            .list(
+                calendarId="primary",
+                timeMin=t_min.isoformat() + "Z",
+                timeMax=t_max.isoformat() + "Z",
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy="startTime",
+            )
+            .execute()
+            .get("items", [])
+        )
+
+        formatted = [
+            {
+                "summary": ev.get("summary"),
+                "start": ev["start"].get("dateTime", ev["start"].get("date")),
+                "end": ev["end"].get("dateTime", ev["end"].get("date")),
+                "location": ev.get("location"),
+                "description": ev.get("description"),
+            }
+            for ev in events
+        ]
+
+        return {
+            "success": True,
+            "message": f"Found {len(formatted)} events",
+            "events": formatted,
+        }
+
+    async def update_google_calendar_event(
+        self, event_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Update a Google Calendar event."""
+        service = await self._get_service("calendar")
+        current = service.events().get(calendarId="primary", eventId=event_id).execute()
+
+        if "title" in updates:
+            current["summary"] = updates["title"]
+        if "description" in updates:
+            current["description"] = updates["description"]
+        if "start_time" in updates:
+            current["start"]["dateTime"] = updates["start_time"]
+        if "end_time" in updates:
+            current["end"]["dateTime"] = updates["end_time"]
+
+        result = (
+            service.events()
+            .update(calendarId="primary", eventId=event_id, body=current)
+            .execute()
+        )
+
+        await self.firestore.update_document_by_field(
+            "calendar_events",
+            "google_event_id",
+            event_id,
+            {
+                **updates,
+                "updated_at": datetime.now().isoformat(),
+                "synced_with_google": True,
+            },
+        )
+
+        return {"success": True, "message": "Event updated", "event_data": result}
+
+    async def delete_google_calendar_event(self, event_id: str) -> Dict[str, Any]:
+        """Delete a Google Calendar event."""
+        service = await self._get_service("calendar")
+        service.events().delete(calendarId="primary", eventId=event_id).execute()
+        await self.firestore.delete_document_by_field(
+            "calendar_events", "google_event_id", event_id
+        )
+        return {"success": True, "message": "Event deleted"}
+
+    # =====================================================================
+    #  GOOGLE DRIVE
+    # =====================================================================
+    async def upload_to_google_drive(
+        self, file_path: str, folder_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Upload a local file to Google Drive."""
+        service = await self._get_service("drive")
+
+        if not os.path.exists(file_path):
+            return {"success": False, "message": f"File not found: {file_path}"}
+
+        file_name = os.path.basename(file_path)
+        metadata: Dict[str, Any] = {"name": file_name}
+        if folder_id:
+            metadata["parents"] = [folder_id]
+
+        from googleapiclient.http import MediaFileUpload
+
+        media = MediaFileUpload(file_path)
+        result = (
+            service.files()
+            .create(
+                body=metadata,
+                media_body=media,
+                fields="id,name,size,mimeType,createdTime",
+            )
+            .execute()
+        )
+
+        doc_ref = await self.firestore.add_document(
+            "drive_files",
+            {
+                "google_file_id": result["id"],
+                "name": result["name"],
+                "size": result.get("size"),
+                "mime_type": result.get("mimeType"),
+                "folder_id": folder_id,
+                "local_path": file_path,
+                "uploaded_at": datetime.now().isoformat(),
+                "synced_with_google": True,
+            },
+        )
+
+        return {
+            "success": True,
+            "message": f"File '{file_name}' uploaded",
+            "file_id": result["id"],
+            "local_id": doc_ref.id,
+            "file_data": result,
+        }
+
+    async def list_google_drive_files(
+        self, folder_id: Optional[str] = None, file_type: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """List files in Google Drive (optionally filtered)."""
+        service = await self._get_service("drive")
+
+        query_parts: List[str] = []
+        if folder_id:
+            query_parts.append(f"'{folder_id}' in parents")
+        if file_type:
+            query_parts.append(f"mimeType='{file_type}'")
+
+        query = " and ".join(query_parts) if query_parts else None
+
+        files = (
+            service.files()
+            .list(
+                q=query,
+                fields="files(id,name,size,mimeType,createdTime,modifiedTime)",
+                orderBy="modifiedTime desc",
+            )
+            .execute()
+            .get("files", [])
+        )
+
+        return {
+            "success": True,
+            "message": f"Retrieved {len(files)} files",
+            "files": files,
+        }
+
+    async def create_google_drive_folder(
+        self, folder_name: str, parent_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a folder in Google Drive."""
+        service = await self._get_service("drive")
+        metadata: Dict[str, Any] = {
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+        }
+        if parent_id:
+            metadata["parents"] = [parent_id]
+
+        result = (
+            service.files()
+            .create(body=metadata, fields="id,name,createdTime")
+            .execute()
+        )
+
+        doc_ref = await self.firestore.add_document(
+            "drive_folders",
+            {
+                "google_folder_id": result["id"],
+                "name": folder_name,
+                "parent_id": parent_id,
+                "created_at": datetime.now().isoformat(),
+                "synced_with_google": True,
+            },
+        )
+
+        return {
+            "success": True,
+            "message": f"Folder '{folder_name}' created",
+            "folder_id": result["id"],
+            "local_id": doc_ref.id,
+            "folder_data": result,
+        }
+
+    # =====================================================================
+    #  GOOGLE DOCS
+    # =====================================================================
+    async def create_google_doc(
+        self, title: str, content: str = ""
+    ) -> Dict[str, Any]:
+        """Create a new Google Doc and (optionally) write its initial content."""
+        drive = await self._get_service("drive")
+        doc_meta = {"name": title, "mimeType": "application/vnd.google-apps.document"}
+        doc = drive.files().create(body=doc_meta).execute()
+        doc_id = doc["id"]
+
+        if content:
+            docs = await self._get_service("docs")
+            docs.documents().batchUpdate(
+                documentId=doc_id,
+                body={
+                    "requests": [
+                        {
+                            "insertText": {
+                                "location": {"index": 1},
+                                "text": content,
+                            }
+                        }
+                    ]
+                },
+            ).execute()
+
+        doc_ref = await self.firestore.add_document(
+            "google_docs",
+            {
+                "google_doc_id": doc_id,
+                "title": title,
+                "content_preview": content[:200],
+                "created_at": datetime.now().isoformat(),
+                "synced_with_google": True,
+            },
+        )
+
+        return {
+            "success": True,
+            "message": f"Document '{title}' created",
+            "doc_id": doc_id,
+            "local_id": doc_ref.id,
+            "doc_url": f"https://docs.google.com/document/d/{doc_id}/edit",
+        }
+
+    async def update_google_doc(
+        self, doc_id: str, content: str
+    ) -> Dict[str, Any]:
+        """Append text to an existing Google Doc."""
+        docs = await self._get_service("docs")
+        doc = docs.documents().get(documentId=doc_id).execute()
+
+        end_index = max(
+            (el.get("endIndex", 1) for el in doc.get("body", {}).get("content", [])), default=1
+        )
+
+        docs.documents().batchUpdate(
+            documentId=doc_id,
+            body={
+                "requests": [
+                    {
+                        "insertText": {
+                            "location": {"index": end_index - 1},
+                            "text": f"\n\n{content}",
+                        }
+                    }
+                ]
+            },
+        ).execute()
+
+        await self.firestore.update_document_by_field(
+            "google_docs",
+            "google_doc_id",
+            doc_id,
+            {
+                "content_preview": content[:200],
+                "updated_at": datetime.now().isoformat(),
+                "synced_with_google": True,
+            },
+        )
+
+        return {
+            "success": True,
+            "message": "Document updated",
+            "doc_url": f"https://docs.google.com/document/d/{doc_id}/edit",
+        }
+
+    async def read_google_doc(self, doc_id: str) -> Dict[str, Any]:
+        """Read and return plain-text content of a Google Doc."""
+        docs = await self._get_service("docs")
+        doc = docs.documents().get(documentId=doc_id).execute()
+
+        text_chunks: List[str] = []
+        for el in doc.get("body", {}).get("content", []):
+            for elem in el.get("paragraph", {}).get("elements", []):
+                if "textRun" in elem:
+                    text_chunks.append(elem["textRun"].get("content", ""))
+
+        return {
+            "success": True,
+            "title": doc.get("title", "Untitled"),
+            "content": "".join(text_chunks).strip(),
+            "doc_url": f"https://docs.google.com/document/d/{doc_id}/edit",
+        }
