@@ -357,11 +357,6 @@ async function checkAuthenticationStatus() {
   try {
     logger.info('Checking Google OAuth authentication status...');
     
-    // Temporarily force NOT_AUTHENTICATED to show auth flow for debugging
-    logger.info('Forcing NOT_AUTHENTICATED for debugging auth flow');
-    isAuthenticated = false;
-    return false;
-    
     // Run Python script to check authentication
     const pythonScript = `
 import sys
@@ -378,11 +373,6 @@ from src.auth.google_oauth import GoogleOAuthManager
 async def check_auth():
     try:
         oauth_manager = GoogleOAuthManager()
-        
-        # Properly clear credentials using CredentialManager
-        await oauth_manager.revoke_credentials()
-        print('INFO: Cleared stored credentials')
-        
         credentials = await oauth_manager.load_credentials()
         if credentials and await oauth_manager.is_authenticated():
             print('AUTHENTICATED')
