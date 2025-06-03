@@ -7,7 +7,7 @@ from loguru import logger
 
 from pipecat.frames.frames import Frame, TextFrame
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.pipeline.pipeline import Pipeline # Removed FunctionImplementation
+from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
@@ -24,6 +24,10 @@ from pipecat.transcriptions.language import Language
 # Import Pipecat's function calling capabilities
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.services.llm_service import FunctionCallParams
+
+# Import LLM context classes
+from pipecat.services.openai.llm import OpenAILLMContext
 
 # Import WebSocket bridge
 from websocket_server import bridge, start_websocket_bridge
@@ -45,21 +49,70 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../../.env'), o
 logger.remove(0)
 logger.add(sys.stderr, level="DEBUG")
 
+# Windows-compatible PipelineRunner wrapper
+class WindowsCompatiblePipelineRunner(PipelineRunner):
+    """
+    Windows-compatible wrapper for PipelineRunner that handles the 
+    NotImplementedError when signal handlers are not supported on Windows.
+    """
+    
+    def __init__(self):
+        try:
+            super().__init__()
+            logger.debug("PipelineRunner initialized with signal handlers")
+        except Exception as e:
+            logger.warning(f"Error initializing PipelineRunner: {e}")
+            # Initialize the base class manually without signal handlers
+            self._pipeline_task = None
+            self._stop_task = None
+            logger.debug("PipelineRunner initialized without signal handlers (Windows compatibility)")
+    
+    def _setup_sigint(self):
+        """Override signal setup to handle Windows NotImplementedError"""
+        try:
+            super()._setup_sigint()
+            logger.debug("Signal handlers set up successfully")
+        except NotImplementedError:
+            logger.debug("Signal handlers not supported on this platform (Windows) - continuing without them")
+        except Exception as e:
+            logger.warning(f"Unexpected error setting up signal handlers: {e}")
+
 # Custom processor to bridge Pipecat events to WebSocket
 class WebSocketBridgeProcessor(FrameProcessor):
     def __init__(self):
         super().__init__()
         self.bridge = bridge
+        # State for selective audio-frame logging
+        self._log_audio_after_response = False  # toggled when a Gemini text response is seen
+        self._audio_log_count = 0
+        self._audio_log_limit = 10  # log only the first N audio frames after response
         
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         # Call parent class method first
         await super().process_frame(frame, direction)
         
-        # Forward relevant frames to WebSocket clients
-        if isinstance(frame, TextFrame):
-            if direction == FrameDirection.UPSTREAM:
-                # This is a response from LLM (Gemini) after function execution
-                await self.bridge.on_response_text(frame.text)
+        # Forward relevant frames to WebSocket clients and manage selective audio logging
+        from pipecat.frames.frames import AudioRawFrame  # Local import to avoid circular deps
+
+        if isinstance(frame, TextFrame) and direction == FrameDirection.UPSTREAM:
+            # Gemini has produced a text response (likely after function call)
+            await self.bridge.on_response_text(frame.text)
+
+            # Enable limited audio-frame logging for the upcoming TTS frames
+            self._log_audio_after_response = True
+            self._audio_log_count = 0
+            logger.debug("WebSocketBridgeProcessor: Enabled audio-frame logging window after Gemini response")
+
+        # Log only the first few AudioRawFrames after a Gemini response
+        if isinstance(frame, AudioRawFrame) and self._log_audio_after_response:
+            if self._audio_log_count < self._audio_log_limit:
+                logger.debug(
+                    f"AudioRawFrame #{self._audio_log_count + 1} | direction={direction.name} | samples={getattr(frame, 'num_samples', 'n/a')}"
+                )
+            self._audio_log_count += 1
+            if self._audio_log_count >= self._audio_log_limit:
+                self._log_audio_after_response = False
+                logger.debug("WebSocketBridgeProcessor: Audio-frame logging window closed")
         
         # Always pass the frame through the pipeline
         await self.push_frame(frame, direction)
@@ -71,241 +124,339 @@ class WebSocketBridgeProcessor(FrameProcessor):
         await self.push_frame(TextFrame(user_text), FrameDirection.DOWNSTREAM)
         logger.debug(f"Pushed TextFrame: '{user_text}' into pipeline from UI.")
 
-# Audio gate processor that can enable/disable audio flow
+# Audio gate processor for controlling audio flow
 class AudioGateProcessor(FrameProcessor):
     def __init__(self):
         super().__init__()
-        self._is_enabled = False
-        
-    async def process_frame(self, frame: Frame, direction: FrameDirection):
-        # Call parent class method first (required by Pipecat)
-        await super().process_frame(frame, direction)
-        
-        # Import frame types here to avoid circular imports
-        from pipecat.frames.frames import AudioRawFrame, SystemFrame
-        
-        # Always pass non-audio frames through (like system control frames)
-        if self._is_enabled or not isinstance(frame, AudioRawFrame):
-            await self.push_frame(frame, direction)
-        else:
-            # Audio gate is closed - drop audio frames but log occasionally
-            if hasattr(self, '_drop_count'):
-                self._drop_count += 1
-                if self._drop_count % 100 == 0:  # Log every 100 dropped frames
-                    logger.debug(f"Audio gate: Dropped {self._drop_count} audio frames")
-            else:
-                self._drop_count = 1
-                logger.debug("Audio gate: Started dropping audio frames")
+        self.enabled = False  # Start disabled
+        logger.debug("AudioGateProcessor initialized - disabled by default")
     
-    async def enable(self):
-        """Enable audio flow"""
-        if not self._is_enabled:
-            logger.info("Audio gate: ENABLED - Audio will flow through")
-            self._is_enabled = True
-            if hasattr(self, '_drop_count'):
-                logger.info(f"Audio gate: Stopped dropping audio frames (dropped {self._drop_count} total)")
-                delattr(self, '_drop_count')
+    def enable(self):
+        self.enabled = True
+        logger.debug("AudioGateProcessor enabled")
+    
+    def disable(self):
+        self.enabled = False
+        logger.debug("AudioGateProcessor disabled")
+    
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        from pipecat.frames.frames import AudioRawFrame
+        
+        # Always allow non-audio frames through
+        if not isinstance(frame, AudioRawFrame):
+            await self.push_frame(frame, direction)
+            return
             
-    async def disable(self):
-        """Disable audio flow"""
-        if self._is_enabled:
-            logger.info("Audio gate: DISABLED - Audio will be blocked")
-            self._is_enabled = False
-            
-    @property
-    def is_enabled(self):
-        return self._is_enabled
+        # For audio frames, only pass through if enabled
+        if self.enabled:
+            await self.push_frame(frame, direction)
+        # If disabled, just drop the audio frame (don't push it)
 
 def create_function_schemas():
-    all_schemas = [
-        # Task management functions - TEMPORARILY DISABLED FOR GOOGLE TASKS TESTING
-        # FunctionSchema(
-        #     name="create_task",
-        #     description="Create a new task with local storage (use this for general task requests unless user specifically mentions 'Google task')",
-        #     properties={
-        #         "task_name": {"type": "string", "description": "The name or description of the task"},
-        #         "due_date": {"type": "string", "description": "The due date for the task (YYYY-MM-DD format or natural language like 'tomorrow', 'next week')"},
-        #         "priority": {"type": "string", "enum": ["low", "medium", "high"], "description": "The priority level of the task"},
-        #     },
-        #     required=["task_name", "due_date"],
-        # ),
+    """Create function schemas for voice assistant capabilities"""
+    
+    function_schemas = [
+        # Task Management
         FunctionSchema(
             name="list_tasks",
-            description="List all tasks, optionally filtered by status or due date",
+            description="List all tasks or filter by status or due date",
             properties={
-                "status": {"type": "string", "enum": ["pending", "completed", "all"], "description": "Filter tasks by status"},
-                "due_date": {"type": "string", "description": "Filter tasks by due date (YYYY-MM-DD format or natural language)"},
+                "status": {
+                    "type": "string",
+                    "description": "Filter tasks by status: 'all', 'pending', 'completed', 'overdue'",
+                    "enum": ["all", "pending", "completed", "overdue"]
+                },
+                "due_date": {
+                    "type": "string", 
+                    "description": "Filter tasks by due date (YYYY-MM-DD format) or relative dates like 'today', 'tomorrow'"
+                }
             },
-            required=[],
+            required=[]
         ),
         
-        # Reminder functions
+        # Reminder Management
         FunctionSchema(
             name="set_reminder",
-            description="Set a reminder for a specific time",
+            description="Set a reminder for a specific time or date",
             properties={
-                "reminder_text": {"type": "string", "description": "The text content of the reminder"},
-                "reminder_time": {"type": "string", "description": "When to trigger the reminder (time format or natural language like 'in 30 minutes', 'tomorrow at 9 AM')"},
+                "reminder_text": {
+                    "type": "string",
+                    "description": "The reminder message text"
+                },
+                "reminder_time": {
+                    "type": "string",
+                    "description": "When to remind (e.g., '2024-06-01 14:30', 'tomorrow at 3pm', 'in 30 minutes')"
+                }
             },
-            required=["reminder_text", "reminder_time"],
+            required=["reminder_text", "reminder_time"]
         ),
         
-        # Timer functions
+        # Timer Management
         FunctionSchema(
             name="start_timer",
-            description="Start a timer for a specified duration",
+            description="Start a countdown timer",
             properties={
-                "duration_minutes": {"type": "number", "description": "Duration of the timer in minutes"},
-                "description": {"type": "string", "description": "Optional description or label for the timer"},
+                "duration_minutes": {
+                    "type": "integer",
+                    "description": "Timer duration in minutes"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional description for what the timer is for"
+                }
             },
-            required=["duration_minutes"],
+            required=["duration_minutes"]
         ),
         
-        # Note functions
+        # Note Taking
         FunctionSchema(
             name="take_note",
-            description="Create a new note with content and optional tags",
+            description="Save a note or memo",
             properties={
-                "content": {"type": "string", "description": "The content of the note"},
-                "tags": {"type": "array", "items": {"type": "string"}, "description": "Optional tags for categorizing the note"},
+                "content": {
+                    "type": "string",
+                    "description": "The note content to save"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags to categorize the note"
+                }
             },
-            required=["content"],
+            required=["content"]
         ),
         
-        # Goal functions
+        # Goal Management
         FunctionSchema(
             name="create_goal",
-            description="Create a new goal with a target date",
+            description="Create a new goal with target date",
             properties={
-                "title": {"type": "string", "description": "The title or name of the goal"},
-                "target_date": {"type": "string", "description": "The target date for achieving the goal (YYYY-MM-DD format or natural language)"},
-                "description": {"type": "string", "description": "Optional detailed description of the goal"},
-                "category": {"type": "string", "description": "Optional category for the goal (e.g., 'personal', 'work', 'health')"},
+                "title": {
+                    "type": "string",
+                    "description": "The goal title or description"
+                },
+                "target_date": {
+                    "type": "string",
+                    "description": "Target completion date (YYYY-MM-DD format)"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Detailed description of the goal"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Goal category (personal, work, health, etc.)",
+                    "enum": ["personal", "work", "health", "learning", "financial", "other"]
+                }
             },
-            required=["title", "target_date"],
+            required=["title", "target_date"]
         ),
         
-        # Context functions
+        # Context Management
         FunctionSchema(
             name="get_status",
-            description="Get the current status of tasks, reminders, goals, or all",
+            description="Get current status of tasks, reminders, goals, or all items",
             properties={
-                "type": {"type": "string", "enum": ["tasks", "reminders", "goals", "all"], "description": "The type of status information to retrieve"},
+                "type": {
+                    "type": "string",
+                    "description": "Type of status to get",
+                    "enum": ["tasks", "reminders", "goals", "all"]
+                }
             },
-            required=[],
+            required=[]
         ),
+        
         FunctionSchema(
             name="get_current_window_context",
-            description="Get information about the currently active window and browser context",
+            description="Get information about the currently active window or browser tab for context-aware assistance",
             properties={},
-            required=[],
+            required=[]
         ),
         
-        # Utility functions
+        # Utility Functions
         FunctionSchema(
             name="get_current_time",
-            description="Get the current date and time",
+            description="Get the current time and date",
             properties={
-                "timezone": {"type": "string", "description": "Optional timezone specification (defaults to local time)"},
+                "timezone": {
+                    "type": "string",
+                    "description": "Timezone (e.g., 'UTC', 'America/New_York', 'local')"
+                }
             },
-            required=[],
+            required=[]
         ),
         
-        # Integration functions
+        # Integration Functions
         FunctionSchema(
             name="sync_with_trello",
-            description="Sync task data with Trello via Zapier webhook",
+            description="Sync task data with Trello board",
             properties={
-                "task_data": {"type": "object", "description": "Task data to sync with Trello"},
+                "task_data": {
+                    "type": "object",
+                    "description": "Task data to sync with Trello"
+                }
             },
-            required=["task_data"],
-        ),
-        FunctionSchema(
-            name="sync_with_notion",
-            description="Sync goal data with Notion via Zapier webhook",
-            properties={
-                "goal_data": {"type": "object", "description": "Goal data to sync with Notion"},
-            },
-            required=["goal_data"],
-        ),
-        FunctionSchema(
-            name="create_calendar_event",
-            description="Create a calendar event in Google Calendar via Zapier webhook",
-            properties={
-                "event_data": {"type": "object", "description": "Calendar event data including title, start_time, end_time, description"},
-            },
-            required=["event_data"],
-        ),
-        FunctionSchema(
-            name="get_integration_status",
-            description="Get the status of external integrations (Trello, Notion, Google Calendar)",
-            properties={},
-            required=[],
+            required=["task_data"]
         ),
         
-        # Google Workspace functions
+        FunctionSchema(
+            name="sync_with_notion",
+            description="Sync goal data with Notion workspace",
+            properties={
+                "goal_data": {
+                    "type": "object",
+                    "description": "Goal data to sync with Notion"
+                }
+            },
+            required=["goal_data"]
+        ),
+        
+        FunctionSchema(
+            name="create_calendar_event",
+            description="Create a calendar event",
+            properties={
+                "event_data": {
+                    "type": "object",
+                    "description": "Event data including title, start/end times, description"
+                }
+            },
+            required=["event_data"]
+        ),
+        
+        FunctionSchema(
+            name="get_integration_status",
+            description="Get the status of third-party integrations",
+            properties={},
+            required=[]
+        ),
+        
+        # Google Workspace Functions
         FunctionSchema(
             name="create_google_task",
-            description="Create a new task directly in Google Tasks (when user specifically mentions 'Google task' or 'Google Tasks')",
+            description="Create a new Google Task in the user's Google Tasks",
             properties={
-                "title": {"type": "string", "description": "The title of the task"},
-                "notes": {"type": "string", "description": "Optional notes or description for the task"},
-                "due_date": {"type": "string", "description": "Optional due date for the task (ISO format or natural language)"},
+                "task_name": {
+                    "type": "string",
+                    "description": "The name/title of the task to create"
+                },
+                "due_date": {
+                    "type": "string",
+                    "description": "Optional due date for the task (YYYY-MM-DD format or relative like 'tomorrow')"
+                },
+                "priority": {
+                    "type": "string",
+                    "description": "Task priority level",
+                    "enum": ["low", "medium", "high"]
+                },
+                "list_name": {
+                    "type": "string",
+                    "description": "The Google Tasks list to add the task to (defaults to 'My Tasks')"
+                }
             },
-            required=["title"],
+            required=["task_name"]
         ),
+        
         FunctionSchema(
             name="list_google_tasks",
-            description="List tasks from Google Tasks",
+            description="List Google Tasks from the user's Google Tasks account",
             properties={
-                "tasklist_id": {"type": "string", "description": "Optional task list ID (defaults to @default)"},
-                "max_results": {"type": "number", "description": "Maximum number of tasks to return (default: 10)"},
+                "tasklist_id": {
+                    "type": "string",
+                    "description": "The ID of the task list to retrieve tasks from (defaults to @default)"
+                }
             },
-            required=[],
+            required=[]
         ),
+        
         FunctionSchema(
             name="create_google_calendar_event",
             description="Create a new event in Google Calendar",
             properties={
-                "summary": {"type": "string", "description": "The title/summary of the event"},
-                "start_time": {"type": "string", "description": "Start time of the event (ISO format)"},
-                "end_time": {"type": "string", "description": "End time of the event (ISO format)"},
-                "description": {"type": "string", "description": "Optional description of the event"},
-                "location": {"type": "string", "description": "Optional location of the event"},
+                "summary": {
+                    "type": "string",
+                    "description": "Event title/summary"
+                },
+                "start_time": {
+                    "type": "string",
+                    "description": "Event start time (ISO format or natural language)"
+                },
+                "end_time": {
+                    "type": "string",
+                    "description": "Event end time (ISO format or natural language)"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Event description"
+                },
+                "location": {
+                    "type": "string",
+                    "description": "Event location"
+                }
             },
-            required=["summary", "start_time", "end_time"],
+            required=["summary", "start_time", "end_time"]
         ),
+        
         FunctionSchema(
             name="list_google_calendar_events",
-            description="List events from Google Calendar",
+            description="List upcoming Google Calendar events",
             properties={
-                "time_min": {"type": "string", "description": "Optional minimum time to list events from (ISO format)"},
-                "time_max": {"type": "string", "description": "Optional maximum time to list events to (ISO format)"},
-                "max_results": {"type": "number", "description": "Maximum number of events to return (default: 10)"},
+                "time_min": {
+                    "type": "string",
+                    "description": "Start time for event listing (ISO format)"
+                },
+                "time_max": {
+                    "type": "string",
+                    "description": "End time for event listing (ISO format)"
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of events to return"
+                }
             },
-            required=[],
+            required=[]
         ),
+        
         FunctionSchema(
             name="upload_to_google_drive",
             description="Upload a file to Google Drive",
             properties={
-                "file_path": {"type": "string", "description": "Local path to the file to upload"},
-                "file_name": {"type": "string", "description": "Name for the file in Google Drive"},
-                "folder_id": {"type": "string", "description": "Optional Google Drive folder ID to upload to"},
+                "file_path": {
+                    "type": "string",
+                    "description": "Local path to the file to upload"
+                },
+                "file_name": {
+                    "type": "string",
+                    "description": "Name for the file in Google Drive"
+                },
+                "folder_id": {
+                    "type": "string",
+                    "description": "Google Drive folder ID (optional)"
+                }
             },
-            required=["file_path", "file_name"],
+            required=["file_path", "file_name"]
         ),
+        
         FunctionSchema(
             name="create_google_doc",
             description="Create a new Google Document",
             properties={
-                "title": {"type": "string", "description": "The title of the document"},
-                "content": {"type": "string", "description": "Optional initial content for the document"},
+                "title": {
+                    "type": "string",
+                    "description": "Document title"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Initial document content"
+                }
             },
-            required=["title"],
-        ),
+            required=["title"]
+        )
     ]
-    return all_schemas, []
+    
+    # Create function name to schema mapping for easy lookup
+    function_mapping = {schema.name: schema for schema in function_schemas}
+    
+    return function_schemas, function_mapping
 
 # Define a function to create and run the pipeline
 async def main():
@@ -335,33 +486,13 @@ async def main():
     # Create function schemas using the previous version's approach
     function_schemas_list, _ = create_function_schemas()
     
-    # Convert FunctionSchema objects to Gemini-compatible function declaration dictionaries
-    function_declarations = []
-    for schema in function_schemas_list:
-        function_declaration = {
-            "name": schema.name,
-            "description": schema.description,
-            "parameters": {
-                "type": "object",  # Ensure lowercase for JSON schema type
-                "properties": schema.properties
-            }
-        }
-        if schema.required: 
-            function_declaration["parameters"]["required"] = schema.required
-        function_declarations.append(function_declaration)
-
-    # Create tools structure exactly as Google's API expects
-    tools = [{
-        "function_declarations": function_declarations
-    }]
-
-    # GEMINI SERVICE with Function Calling - using previous version's approach
-    gemini_service = GeminiMultimodalLiveLLMService(
-        api_key=os.getenv("GOOGLE_API_KEY"),
-        model="models/gemini-2.0-flash-live-001",
-        voice_id="Puck",
-        transcribe_user_audio=True,
-        system_instruction="""You are a helpful voice assistant that can manage tasks, reminders, timers, notes, and goals. 
+    # Convert FunctionSchema objects to tools for Gemini
+    tools = ToolsSchema(standard_tools=function_schemas_list)
+    
+    # Create initial context messages
+    initial_messages = [{
+        "role": "system",
+        "content": """You are a helpful voice assistant that can manage tasks, reminders, timers, notes, and goals. 
         
 Your primary goal is to assist the user conversationally. Only call functions when the user explicitly requests an action that matches a function's description. Do NOT proactively suggest or call functions without a clear user intent. If a user's request is ambiguous, ask for clarification before attempting to call a function.
 
@@ -386,82 +517,128 @@ For task creation results:
 - Success: "I've successfully created the task '[task_name]' for you."
 - Failure: "I couldn't create that task. [error_message]"
         
-Keep responses brief and natural for speech. Confirm actions clearly after function completion.""",
-        tools=tools,  # Use the properly structured tools
+Keep responses brief and natural for speech. Confirm actions clearly after function completion."""
+    }]
+
+    # Create LLM context without tools (tools go directly to Gemini service)
+    context = OpenAILLMContext(messages=initial_messages)
+    
+    # GEMINI SERVICE with Function Calling using new API
+    gemini_service = GeminiMultimodalLiveLLMService(
+        api_key=os.getenv("GOOGLE_API_KEY"),
+        model="models/gemini-2.0-flash-live-001",
+        voice_id="Puck",
+        tools=tools,  # Pass tools directly to the service
         input_params=InputParams(
             language=Language.EN_US,
             modalities=GeminiMultimodalModalities.AUDIO,
             enable_automatic_punctuation=True,
         )
     )
+    
+    # Create context aggregator for proper conversation handling
+    context_aggregator = gemini_service.create_context_aggregator(context)
 
-    # Register function handlers using the previous version's approach
-    async def handle_list_tasks(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await task_functions.list_tasks(args.get('status', 'all'), args.get('due_date'))
-        await result_callback(result)
+    # Register function handlers using the NEW FunctionCallParams API
+    async def handle_list_tasks(params: FunctionCallParams):
+        logger.info(f"=== handle_list_tasks called with new API ===")
+        logger.info(f"Function: {params.function_name}")
+        logger.info(f"Args: {params.arguments}")
+        
+        result = await task_functions.list_tasks(
+            params.arguments.get('status', 'all'), 
+            params.arguments.get('due_date')
+        )
+        await params.result_callback(result)
 
-    async def handle_set_reminder(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await reminder_functions.set_reminder(args.get('reminder_text'), args.get('reminder_time'))
-        await result_callback(result)
+    async def handle_set_reminder(params: FunctionCallParams):
+        logger.info(f"=== handle_set_reminder called with new API ===")
+        result = await reminder_functions.set_reminder(
+            params.arguments.get('reminder_text'), 
+            params.arguments.get('reminder_time')
+        )
+        await params.result_callback(result)
 
-    async def handle_start_timer(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await timer_functions.start_timer(args.get('duration_minutes'), args.get('description'))
-        await result_callback(result)
+    async def handle_start_timer(params: FunctionCallParams):
+        logger.info(f"=== handle_start_timer called with new API ===")
+        result = await timer_functions.start_timer(
+            params.arguments.get('duration_minutes'), 
+            params.arguments.get('description')
+        )
+        await params.result_callback(result)
 
-    async def handle_take_note(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await note_functions.take_note(args.get('content'), args.get('tags', []))
-        await result_callback(result)
+    async def handle_take_note(params: FunctionCallParams):
+        logger.info(f"=== handle_take_note called with new API ===")
+        result = await note_functions.take_note(
+            params.arguments.get('content'), 
+            params.arguments.get('tags', [])
+        )
+        await params.result_callback(result)
 
-    async def handle_create_goal(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await goal_functions.create_goal(args.get('title'), args.get('target_date'), args.get('description', ''), args.get('category', 'personal'))
-        await result_callback(result)
+    async def handle_create_goal(params: FunctionCallParams):
+        logger.info(f"=== handle_create_goal called with new API ===")
+        result = await goal_functions.create_goal(
+            params.arguments.get('title'), 
+            params.arguments.get('target_date'), 
+            params.arguments.get('description', ''), 
+            params.arguments.get('category', 'personal')
+        )
+        await params.result_callback(result)
 
-    async def handle_get_status(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await context_functions.get_status(args.get('type', 'all'))
-        await result_callback(f"Status: {result['message']}")
+    async def handle_get_status(params: FunctionCallParams):
+        logger.info(f"=== handle_get_status called with new API ===")
+        result = await context_functions.get_status(params.arguments.get('type', 'all'))
+        await params.result_callback(f"Status: {result['message']}")
 
-    async def handle_get_current_window_context(function_name, tool_call_id, args, llm, context, result_callback):
+    async def handle_get_current_window_context(params: FunctionCallParams):
+        logger.info(f"=== handle_get_current_window_context called with new API ===")
         result = await context_functions.get_current_window_context()
         if result.get('success'):
             context_info = result.get('context', {})
             if context_info.get('is_browser') and context_info.get('context_url'):
-                await result_callback(f"Current browser context: {context_info.get('context_title', 'Unknown page')} at {context_info.get('context_url')}")
+                await params.result_callback(f"Current browser context: {context_info.get('context_title', 'Unknown page')} at {context_info.get('context_url')}")
             else:
-                await result_callback(f"Current window: {context_info.get('window_title', 'Unknown')} ({context_info.get('process_name', 'Unknown process')})")
+                await params.result_callback(f"Current window: {context_info.get('window_title', 'Unknown')} ({context_info.get('process_name', 'Unknown process')})")
         else:
-            await result_callback(f"Context capture failed: {result.get('message', 'Unknown error')}")
+            await params.result_callback(f"Context capture failed: {result.get('message', 'Unknown error')}")
 
-    async def handle_get_current_time(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await utility_functions.get_current_time(args.get('timezone', 'local'))
-        await result_callback(result)
+    async def handle_get_current_time(params: FunctionCallParams):
+        logger.info(f"=== handle_get_current_time called with new API ===")
+        result = await utility_functions.get_current_time(params.arguments.get('timezone', 'local'))
+        await params.result_callback(result)
 
-    # Integration function handlers
-    async def handle_sync_with_trello(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await integration_functions.sync_with_trello(args.get('task_data'))
-        await result_callback(result)
+    # Integration function handlers with new API
+    async def handle_sync_with_trello(params: FunctionCallParams):
+        logger.info(f"=== handle_sync_with_trello called with new API ===")
+        result = await integration_functions.sync_with_trello(params.arguments.get('task_data'))
+        await params.result_callback(result)
     
-    async def handle_sync_with_notion(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await integration_functions.sync_with_notion(args.get('goal_data'))
-        await result_callback(result)
+    async def handle_sync_with_notion(params: FunctionCallParams):
+        logger.info(f"=== handle_sync_with_notion called with new API ===")
+        result = await integration_functions.sync_with_notion(params.arguments.get('goal_data'))
+        await params.result_callback(result)
     
-    async def handle_create_calendar_event(function_name, tool_call_id, args, llm, context, result_callback):
-        result = await integration_functions.create_calendar_event(args.get('event_data'))
-        await result_callback(result)
+    async def handle_create_calendar_event(params: FunctionCallParams):
+        logger.info(f"=== handle_create_calendar_event called with new API ===")
+        result = await integration_functions.create_calendar_event(params.arguments.get('event_data'))
+        await params.result_callback(result)
     
-    async def handle_get_integration_status(function_name, tool_call_id, args, llm, context, result_callback):
+    async def handle_get_integration_status(params: FunctionCallParams):
+        logger.info(f"=== handle_get_integration_status called with new API ===")
         result = await integration_functions.get_integration_status()
-        await result_callback(result)
+        await params.result_callback(result)
     
-    # Google Workspace function handlers - updated to match current Google function implementations
-    async def handle_create_google_task(function_name, tool_call_id, args, llm, context, result_callback):
-        logger.info(f"=== GOOGLE TASKS: handle_create_google_task called ===")
-        logger.info(f"Function args: {args}")
+    # Google Workspace function handlers with new API
+    async def handle_create_google_task(params: FunctionCallParams):
+        logger.info(f"=== GOOGLE TASKS: handle_create_google_task called with new API ===")
+        logger.info(f"Function: {params.function_name}")
+        logger.info(f"Args: {params.arguments}")
         
         try:
-            task_name = args.get('title') or args.get('task_name', 'Untitled Task')
-            due_date = args.get('due_date')
-            priority = args.get('priority', 'medium')
-            list_name = args.get('list_name', 'My Tasks')
+            task_name = params.arguments.get('task_name', 'Untitled Task')
+            due_date = params.arguments.get('due_date')
+            priority = params.arguments.get('priority', 'medium')
+            list_name = params.arguments.get('list_name', 'My Tasks')
             
             logger.info(f"Creating Google task: task_name='{task_name}', due_date='{due_date}', list_name='{list_name}'")
             
@@ -473,23 +650,8 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
             )
             logger.info(f"Google Tasks API result: {result}")
             
-            # Return raw data dictionary for the LLM to format
-            if result.get("success"):
-                formatted_result = {
-                    "success": True,
-                    "task_name": task_name,
-                    "message": result.get("message", f"Successfully created task: {task_name}"),
-                    "details": result.get("task_details", {})
-                }
-            else:
-                formatted_result = {
-                    "success": False,
-                    "task_name": task_name,
-                    "message": result.get("message", f"Failed to create task: {task_name}"),
-                    "error_details": result.get("error", None)
-                }
-            
-            await result_callback(formatted_result)
+            # Return result for the LLM to format
+            await params.result_callback(result)
                 
         except Exception as e:
             logger.error(f"Exception in handle_create_google_task: {e}", exc_info=True)
@@ -498,14 +660,15 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
                 "error": True,
                 "message": f"There was an error trying to create your task: {str(e)}"
             }
-            await result_callback(error_response)
+            await params.result_callback(error_response)
     
-    async def handle_list_google_tasks(function_name, tool_call_id, args, llm, context, result_callback):
-        logger.info(f"=== GOOGLE TASKS: handle_list_google_tasks called ===")
-        logger.info(f"Function args: {args}")
+    async def handle_list_google_tasks(params: FunctionCallParams):
+        logger.info(f"=== GOOGLE TASKS: handle_list_google_tasks called with new API ===")
+        logger.info(f"Function: {params.function_name}")
+        logger.info(f"Args: {params.arguments}")
         
         try:
-            list_id = args.get('tasklist_id', '@default')
+            list_id = params.arguments.get('tasklist_id', '@default')
             
             result = await google_workspace_functions.list_google_tasks(
                 list_id=list_id,
@@ -513,31 +676,8 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
             )
             logger.info(f"Google Tasks API result: {result}")
             
-            # Return raw data dictionary for the LLM to format
-            if result.get("success"):
-                count = result.get("count", 0)
-                tasks_data = result.get("tasks", [])
-                
-                formatted_result = {
-                    "success": True,
-                    "task_count": count,
-                    "tasks": [{
-                        "title": task.get('title', 'Untitled Task'),
-                        "id": task.get('id', ''),
-                        "status": task.get('status', 'needsAction')
-                    } for task in tasks_data],
-                    "list_id": list_id
-                }
-            else:
-                formatted_result = {
-                    "success": False,
-                    "task_count": 0,
-                    "tasks": [],
-                    "message": result.get("message", "Sorry, I couldn't list your tasks right now."),
-                    "error_details": result.get("error", None)
-                }
-            
-            await result_callback(formatted_result)
+            # Return result for the LLM to format
+            await params.result_callback(result)
             
         except Exception as e:
             logger.error(f"Exception in handle_list_google_tasks: {e}", exc_info=True)
@@ -548,34 +688,46 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
                 "tasks": [],
                 "message": f"There was an error trying to list your tasks: {str(e)}"
             }
-            await result_callback(error_response)
+            await params.result_callback(error_response)
     
-    async def handle_create_google_calendar_event(function_name, tool_call_id, args, llm, context, result_callback):
+    async def handle_create_google_calendar_event(params: FunctionCallParams):
+        logger.info(f"=== handle_create_google_calendar_event called with new API ===")
         result = await google_workspace_functions.create_calendar_event(
-            args.get('summary'), args.get('start_time'), args.get('end_time'), 
-            args.get('description', ''), args.get('location', '')
+            params.arguments.get('summary'), 
+            params.arguments.get('start_time'), 
+            params.arguments.get('end_time'), 
+            params.arguments.get('description', ''), 
+            params.arguments.get('location', '')
         )
-        await result_callback(result)
+        await params.result_callback(result)
     
-    async def handle_list_google_calendar_events(function_name, tool_call_id, args, llm, context, result_callback):
+    async def handle_list_google_calendar_events(params: FunctionCallParams):
+        logger.info(f"=== handle_list_google_calendar_events called with new API ===")
         result = await google_workspace_functions.list_calendar_events(
-            args.get('time_min'), args.get('time_max'), args.get('max_results', 10)
+            params.arguments.get('time_min'), 
+            params.arguments.get('time_max'), 
+            params.arguments.get('max_results', 10)
         )
-        await result_callback(result)
+        await params.result_callback(result)
     
-    async def handle_upload_to_google_drive(function_name, tool_call_id, args, llm, context, result_callback):
+    async def handle_upload_to_google_drive(params: FunctionCallParams):
+        logger.info(f"=== handle_upload_to_google_drive called with new API ===")
         result = await google_workspace_functions.upload_to_drive(
-            args.get('file_path'), args.get('file_name'), args.get('folder_id')
+            params.arguments.get('file_path'), 
+            params.arguments.get('file_name'), 
+            params.arguments.get('folder_id')
         )
-        await result_callback(result)
+        await params.result_callback(result)
     
-    async def handle_create_google_doc(function_name, tool_call_id, args, llm, context, result_callback):
+    async def handle_create_google_doc(params: FunctionCallParams):
+        logger.info(f"=== handle_create_google_doc called with new API ===")
         result = await google_workspace_functions.create_google_doc(
-            args.get('title'), args.get('content', '')
+            params.arguments.get('title'), 
+            params.arguments.get('content', '')
         )
-        await result_callback(result)
+        await params.result_callback(result)
 
-    # Register all functions with the service using the previous version's approach
+    # Register all functions with the service using the NEW API
     gemini_service.register_function("list_tasks", handle_list_tasks)
     gemini_service.register_function("set_reminder", handle_set_reminder)
     gemini_service.register_function("start_timer", handle_start_timer)
@@ -585,13 +737,13 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
     gemini_service.register_function("get_current_window_context", handle_get_current_window_context)
     gemini_service.register_function("get_current_time", handle_get_current_time)
     
-    # Register integration functions
+    # Integration functions
     gemini_service.register_function("sync_with_trello", handle_sync_with_trello)
     gemini_service.register_function("sync_with_notion", handle_sync_with_notion)
     gemini_service.register_function("create_calendar_event", handle_create_calendar_event)
     gemini_service.register_function("get_integration_status", handle_get_integration_status)
     
-    # Register Google Workspace functions
+    # Google Workspace functions
     gemini_service.register_function("create_google_task", handle_create_google_task)
     gemini_service.register_function("list_google_tasks", handle_list_google_tasks)
     gemini_service.register_function("create_google_calendar_event", handle_create_google_calendar_event)
@@ -601,93 +753,44 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
 
     # Create WebSocket bridge processor
     websocket_processor = WebSocketBridgeProcessor()
-
-    # SIMPLIFIED PIPELINE like the previous version - no monitoring processors
-    # Audio/Text Input -> Audio Gate -> Gemini (STT + Function Calling + TTS) -> WebSocket Bridge -> Audio Output
-    pipeline = Pipeline([
-        transport.input(),          # Audio input from microphone
-        audio_gate,                 # Audio gate (controllable)
-        gemini_service,             # Gemini: STT, Function Calling, TTS
-        websocket_processor,        # Bridges frames to/from WebSocket for Electron UI
-        transport.output()          # Audio output to speakers
-    ])
-
-    # Attach audio gate to pipeline for WebSocket control
-    pipeline.audio_gate = audio_gate
-    
-    # Connect pipeline and text input handler to bridge
-    bridge.set_pipeline(pipeline)
     bridge.set_text_input_handler(websocket_processor.handle_text_from_ui)
 
-    runner_params = {}
-    if sys.platform == "win32":
-        logger.info("Disabling PipelineRunner SIGINT handling on Windows.")
-        runner_params["handle_sigint"] = False
+    logger.info("Creating pipeline with proper context aggregation...")
+    # Create the pipeline with proper context aggregation
+    pipeline = Pipeline([
+        transport.input(),           # Transport input (audio from mic)
+        context_aggregator.user(),   # User context aggregation (CRITICAL for function calling)
+        gemini_service,              # Gemini LLM with function calling
+        transport.output(),          # Transport output (audio to speakers)
+        context_aggregator.assistant(),  # Assistant context aggregation (CRITICAL for function calling)
+        websocket_processor,         # WebSocket bridge (for UI communication)
+    ])
 
-    runner = PipelineRunner(**runner_params)
-    logger.info("Starting pipeline: Audio -> Gemini Live (with Functions) -> WebSocket Bridge -> Audio")
-    
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(allow_interruptions=True, enable_metrics=True),
-        observers=[TranscriptionLogObserver()]
+    # Create pipeline parameters
+    params = PipelineParams(
+        allow_interruptions=True,
+        enable_metrics=True,
+        enable_usage_metrics=True,
     )
+
+    # Create and run pipeline task
+    runner = WindowsCompatiblePipelineRunner()
+    task = PipelineTask(pipeline, params=params)
+
+    # Enable audio gate and start WebSocket server
+    audio_gate.enable()
     
-    # Define async functions to run concurrently
-    async def run_websocket_server():
-        """Run the WebSocket server and keep it alive"""
-        logger.info("Starting WebSocket server...")
-        server = await start_websocket_bridge()
-        logger.info("WebSocket server started and serving on localhost:8765")
-        
-        # Print BACKEND_READY signal for main.js to detect
-        print("BACKEND_READY", flush=True)
-        logger.info("BACKEND_READY signal sent to main process")
-        
-        # Keep the server alive by waiting for it to close
-        try:
-            await server.wait_closed()
-        except Exception as e:
-            logger.error(f"WebSocket server error: {e}")
-        finally:
-            logger.info("WebSocket server has stopped")
+    # Start WebSocket bridge server in the background
+    await start_websocket_bridge()
     
-    async def run_pipeline():
-        """Run the Pipecat pipeline"""
-        logger.info("Starting Pipecat pipeline...")
-        await runner.run(task)
+    # Add transcription observer for debugging
+    transcription_observer = TranscriptionLogObserver()
+    task.add_observer(transcription_observer)
+
+    logger.info("🎙️ Voice assistant ready with function calling support!")
+    logger.info("Say 'list my Google tasks' or 'create a Google task' to test function calling")
     
-    try:
-        # Run both WebSocket server and pipeline concurrently using gather
-        logger.info("Starting WebSocket server and pipeline concurrently...")
-        await asyncio.gather(
-            run_websocket_server(),
-            run_pipeline(),
-            return_exceptions=True
-        )
-        
-    except KeyboardInterrupt:
-        logger.info("Application interrupted by user")
-    except Exception as e:
-        logger.error(f"Application error: {e}")
-        raise
-    finally:
-        logger.info("Application shutdown complete")
+    await runner.run(task)
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        try:
-            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-            logger.debug("WindowsSelectorEventLoopPolicy set.")
-        except Exception as e:
-            logger.warning(f"Could not set WindowsSelectorEventLoopPolicy: {e}")
-    
-    try:
-        logger.debug(f"Current asyncio event loop policy: {type(asyncio.get_event_loop_policy()).__name__}")
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Application terminated by user (KeyboardInterrupt).")
-    except Exception as e:
-        logger.error(f"An error occurred: {type(e).__name__} - {repr(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
+    asyncio.run(main())
