@@ -246,8 +246,7 @@ class GoogleWorkspaceFunctions:
             "event_data": event,
         }
 
-    # Alias with a clearer name (used by many pipelines)
-    create_google_calendar_event = create_calendar_event
+
 
     async def list_google_calendar_events(
         self, time_min: str, time_max: str, max_results: int = 10

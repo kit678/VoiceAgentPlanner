@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from loguru import logger
 from firebase.firestore_service import FirestoreService
-from functions.integration_functions import IntegrationFunctions
+
 from functions.google_workspace_functions import GoogleWorkspaceFunctions
 
 class GoalFunctions:
@@ -12,7 +12,7 @@ class GoalFunctions:
     
     def __init__(self):
         self.firestore = FirestoreService()
-        self.integrations = IntegrationFunctions()  # Legacy Zapier integrations
+
         self.google_workspace = GoogleWorkspaceFunctions()  # Google Workspace integration
         logger.info("GoalFunctions initialized with Google Workspace integration")
     
@@ -89,11 +89,6 @@ class GoalFunctions:
                 await self.firestore.update_goal(goal_id, {"google_doc_id": google_result.get("doc_id")})
             else:
                 response["google_sync_warning"] = google_result.get("message")
-                # Fallback to legacy Notion sync if Google fails
-                notion_result = await self.integrations.sync_with_notion(goal_data)
-                if notion_result.get("success"):
-                    response["message"] += " (synced with Notion as fallback)"
-                    response["notion_synced"] = True
             
             return response
             

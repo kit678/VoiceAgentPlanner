@@ -529,6 +529,7 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
         model="models/gemini-2.0-flash-live-001",
         voice_id="Puck",
         tools=tools,  # Pass tools directly to the service
+        inference_on_context_initialization=False,  # Disable automatic greeting
         input_params=InputParams(
             language=Language.EN_US,
             modalities=GeminiMultimodalModalities.AUDIO,
@@ -794,5 +795,5 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
     
     await runner.run(task)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# if __name__ == "__main__":
+#     asyncio.run(main())
