@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from loguru import logger
 from firebase.firestore_service import FirestoreService
-from functions.integration_functions import IntegrationFunctions
+
 from functions.google_workspace_functions import GoogleWorkspaceFunctions
 
 class TaskFunctions:
@@ -12,7 +12,7 @@ class TaskFunctions:
     
     def __init__(self):
         self.firestore = FirestoreService()
-        self.integrations = IntegrationFunctions()  # Legacy Zapier integrations
+
         self.google_workspace = GoogleWorkspaceFunctions()  # Google Workspace integration
         logger.info("TaskFunctions initialized with Google Workspace integration")
     
@@ -63,11 +63,6 @@ class TaskFunctions:
                 response["google_task_id"] = google_result.get("task_id")
             else:
                 response["google_sync_warning"] = google_result.get("message")
-                # Fallback to legacy Trello sync if Google fails
-                trello_result = await self.integrations.sync_with_trello(task_data)
-                if trello_result.get("success"):
-                    response["message"] += " (synced with Trello as fallback)"
-                    response["trello_synced"] = True
             
             return response
             

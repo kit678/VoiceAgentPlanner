@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from loguru import logger
 from firebase.firestore_service import FirestoreService
-from functions.integration_functions import IntegrationFunctions
+
 from functions.google_workspace_functions import GoogleWorkspaceFunctions
 
 class ReminderFunctions:
@@ -12,7 +12,7 @@ class ReminderFunctions:
     
     def __init__(self):
         self.firestore = FirestoreService()
-        self.integrations = IntegrationFunctions()  # Legacy Zapier integrations
+
         self.google_workspace = GoogleWorkspaceFunctions()  # Google Calendar integration
         logger.info("ReminderFunctions initialized with Google Calendar integration")
     
@@ -73,18 +73,7 @@ class ReminderFunctions:
                 await self.firestore.update_reminder(reminder_id, {"google_event_id": calendar_result.get("event_id")})
             else:
                 response["google_sync_warning"] = calendar_result.get("message")
-                # Fallback to legacy Zapier calendar sync if Google fails
-                legacy_calendar_event = {
-                    "title": f"Reminder: {reminder_text}",
-                    "start_time": parsed_time.isoformat(),
-                    "end_time": (parsed_time + timedelta(minutes=15)).isoformat(),
-                    "description": f"Voice Assistant Reminder: {reminder_text}",
-                    "type": "reminder"
-                }
-                legacy_result = await self.integrations.create_calendar_event(legacy_calendar_event)
-                if legacy_result.get("success"):
-                    response["message"] += " (added to calendar via fallback)"
-                    response["calendar_synced"] = True
+                # Google Calendar sync failed - no fallback available
             
             return response
             

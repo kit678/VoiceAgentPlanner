@@ -80,51 +80,90 @@ class GoogleWorkspaceFunctions:
         logger.info(f"=== CREATE GOOGLE TASK: {task_name} ===")
         service = await self._get_service("tasks")
 
-        # Resolve list ID
-        if not list_id:
+        # Resolve list ID - if list_id looks like a name, find the actual ID
+        if not list_id or " " in list_id or list_id in ["My Tasks", "Tasks"]:
             task_lists = service.tasklists().list().execute()
-            list_id = task_lists["items"][0]["id"] if task_lists.get("items") else None
-            if not list_id:
+            if not task_lists.get("items"):
                 return {
                     "success": False,
                     "message": "No task lists found in Google Tasks",
                 }
+            
+            # If list_id was provided as a name, try to find matching list
+            if list_id and list_id not in ["My Tasks", "Tasks"]:
+                for task_list in task_lists["items"]:
+                    if task_list["title"].lower() == list_id.lower():
+                        list_id = task_list["id"]
+                        break
+                else:
+                    # If no match found, use default list
+                    list_id = task_lists["items"][0]["id"]
+            else:
+                # Use default list
+                list_id = task_lists["items"][0]["id"]
 
+        # Create task body according to Google Tasks API format
         body: Dict[str, Any] = {
             "title": task_name,
-            "notes": f"Priority: {priority}\nCreated by Voice Assistant",
         }
+        
+        # Add notes if priority is specified
+        if priority and priority != "medium":
+            body["notes"] = f"Priority: {priority}\nCreated by Voice Assistant"
+        else:
+            body["notes"] = "Created by Voice Assistant"
+            
+        # Handle due date - must be RFC 3339 format (date only)
         if due_date:
             try:
-                due_dt = datetime.fromisoformat(due_date.replace("Z", "+00:00"))
-                body["due"] = due_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            except ValueError:
-                logger.warning("Invalid due-date format supplied; skipping")
+                # Handle common date formats
+                if due_date.lower() == "today":
+                    due_dt = datetime.now().date()
+                elif due_date.lower() == "tomorrow":
+                    due_dt = (datetime.now() + timedelta(days=1)).date()
+                else:
+                    # Try to parse ISO format
+                    if "T" in due_date:
+                        due_dt = datetime.fromisoformat(due_date.replace("Z", "+00:00")).date()
+                    else:
+                        due_dt = datetime.fromisoformat(due_date).date()
+                
+                # Format as RFC 3339 date (Google Tasks API requirement)
+                body["due"] = due_dt.strftime("%Y-%m-%dT00:00:00.000Z")
+                logger.info(f"Due date set to: {body['due']}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid due-date format '{due_date}': {e}; skipping")
 
-        result = service.tasks().insert(tasklist=list_id, body=body).execute()
+        try:
+            logger.info(f"Creating task with body: {body}")
+            result = service.tasks().insert(tasklist=list_id, body=body).execute()
+            logger.info(f"Task created successfully: {result.get('id')}")
 
-        # Persist locally
-        doc_ref = await self.firestore.add_document(
-            "tasks",
-            {
-                "google_task_id": result["id"],
-                "google_list_id": list_id,
-                "title": task_name,
-                "priority": priority,
-                "due_date": due_date,
-                "status": "needsAction",
-                "created_at": datetime.now().isoformat(),
-                "synced_with_google": True,
-            },
-        )
-
-        return {
-            "success": True,
-            "message": f"Task '{task_name}' created successfully",
-            "task_id": result["id"],
-            "local_id": doc_ref.id,
-            "task_data": result,
-        }
+            # Persist locally
+            doc_ref = await self.firestore.add_document(
+                "tasks",
+                {
+                    "google_task_id": result["id"],
+                    "google_list_id": list_id,
+                    "title": task_name,
+                    "priority": priority,
+                    "due_date": due_date,
+                    "status": "needsAction",
+                    "created_at": datetime.now().isoformat(),
+                    "synced_with_google": True,
+                },
+            )
+            
+            # Return the actual task object from Google API (not a custom dict)
+            # This ensures the result has an 'id' attribute that the handler expects
+            return result
+            
+        except HttpError as e:
+            logger.error(f"Google Tasks API error: {e}")
+            return f"Failed to create task: {e}"
+        except Exception as e:
+            logger.error(f"Unexpected error creating task: {e}")
+            return f"Failed to create task: {e}"
 
     async def list_google_tasks(
         self,
@@ -182,10 +221,24 @@ class GoogleWorkspaceFunctions:
             current["notes"] = updates["notes"]
         if "due_date" in updates and updates["due_date"]:
             try:
-                due_dt = datetime.fromisoformat(updates["due_date"].replace("Z", "+00:00"))
-                current["due"] = due_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            except ValueError:
-                logger.warning("Invalid due-date while updating task")
+                due_date_str = str(updates["due_date"])  # Ensure it's a string
+                # Handle common date formats
+                if due_date_str.lower() == "today":
+                    due_dt = datetime.now().date()
+                elif due_date_str.lower() == "tomorrow":
+                    due_dt = (datetime.now() + timedelta(days=1)).date()
+                else:
+                    # Try to parse ISO format
+                    if "T" in due_date_str:
+                        due_dt = datetime.fromisoformat(due_date_str.replace("Z", "+00:00")).date()
+                    else:
+                        due_dt = datetime.fromisoformat(due_date_str).date()
+                
+                # Format as RFC 3339 date (Google Tasks API requirement)
+                current["due"] = due_dt.strftime("%Y-%m-%dT00:00:00.000Z")
+                logger.info(f"Updated due date to: {current['due']}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Invalid due-date format '{updates['due_date']}': {e}; skipping update")
 
         if "status" in updates:
             current["status"] = updates["status"]
@@ -227,24 +280,69 @@ class GoogleWorkspaceFunctions:
         location: str = "",
     ) -> Dict[str, Any]:
         """
-        Original helper kept for compatibility (summary/start_time/end_time signature).
+        Create a Google Calendar event following the correct API format.
+        Expects start_time and end_time in RFC3339 format.
         """
         service = await self._get_service("calendar")
+        
+        # Validate and format datetime strings
+        try:
+            # Ensure RFC3339 format for start and end times
+            if not start_time.endswith('Z') and '+' not in start_time:
+                start_dt = datetime.fromisoformat(start_time)
+                start_time = start_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            
+            if not end_time.endswith('Z') and '+' not in end_time:
+                end_dt = datetime.fromisoformat(end_time)
+                end_time = end_dt.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError as e:
+            logger.warning(f"Invalid datetime format: {e}")
+            return {"success": False, "message": f"Invalid datetime format: {e}"}
+        
+        # Create event body according to Google Calendar API format
         body = {
             "summary": summary,
-            "location": location,
             "description": description,
             "start": {"dateTime": start_time, "timeZone": "UTC"},
             "end": {"dateTime": end_time, "timeZone": "UTC"},
         }
-        event = service.events().insert(calendarId="primary", body=body).execute()
-        return {
-            "success": True,
-            "message": f"Event '{summary}' created",
-            "event_id": event["id"],
-            "event_link": event.get("htmlLink"),
-            "event_data": event,
-        }
+        
+        # Add location if provided
+        if location:
+            body["location"] = location
+        
+        try:
+            event = service.events().insert(calendarId="primary", body=body).execute()
+            
+            # Persist to local database
+            doc_ref = await self.firestore.add_document(
+                "calendar_events",
+                {
+                    "google_event_id": event["id"],
+                    "summary": summary,
+                    "description": description,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "location": location,
+                    "created_at": datetime.now().isoformat(),
+                    "synced_with_google": True,
+                },
+            )
+            
+            return {
+                 "success": True,
+                 "message": f"Event '{summary}' created successfully",
+                 "event_id": event["id"],
+                 "event_link": event.get("htmlLink"),
+                 "local_id": doc_ref.id,
+                 "event_data": event,
+             }
+        except HttpError as e:
+            logger.error(f"Google Calendar API error: {e}")
+            return {"success": False, "message": f"Calendar API error: {e}"}
+        except Exception as e:
+            logger.error(f"Unexpected error creating calendar event: {e}")
+            return {"success": False, "message": f"Error creating event: {e}"}
 
 
 

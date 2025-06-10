@@ -2,6 +2,7 @@
 import asyncio
 import sys
 import os
+import signal
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -40,7 +41,7 @@ from functions.note_functions import NoteFunctions
 from functions.goal_functions import GoalFunctions
 from functions.context_functions import ContextFunctions
 from functions.utility_functions import UtilityFunctions
-from functions.integration_functions import IntegrationFunctions
+
 from functions.google_workspace_functions import GoogleWorkspaceFunctions
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '../../.env'), override=True)
@@ -211,7 +212,7 @@ def create_function_schemas():
         # Note Taking
         FunctionSchema(
             name="take_note",
-            description="Save a note or memo",
+            description="Take a note, save a memo, or record information when user says 'take a note', 'make a note', 'remember this', 'jot this down', 'record this', 'note that', or similar note-taking requests",
             properties={
                 "content": {
                     "type": "string",
@@ -287,29 +288,6 @@ def create_function_schemas():
         ),
         
         # Integration Functions
-        FunctionSchema(
-            name="sync_with_trello",
-            description="Sync task data with Trello board",
-            properties={
-                "task_data": {
-                    "type": "object",
-                    "description": "Task data to sync with Trello"
-                }
-            },
-            required=["task_data"]
-        ),
-        
-        FunctionSchema(
-            name="sync_with_notion",
-            description="Sync goal data with Notion workspace",
-            properties={
-                "goal_data": {
-                    "type": "object",
-                    "description": "Goal data to sync with Notion"
-                }
-            },
-            required=["goal_data"]
-        ),
         
         FunctionSchema(
             name="create_calendar_event",
@@ -325,7 +303,7 @@ def create_function_schemas():
         
         FunctionSchema(
             name="get_integration_status",
-            description="Get the status of third-party integrations",
+            description="Get the status of available integrations (Google Workspace only)",
             properties={},
             required=[]
         ),
@@ -458,9 +436,64 @@ def create_function_schemas():
     
     return function_schemas, function_mapping
 
+# Global server reference for cleanup
+websocket_server = None
+
+async def cleanup_and_shutdown():
+    """Cleanup resources and shutdown gracefully"""
+    logger.info("Starting graceful shutdown...")
+    
+    # Close WebSocket server
+    global websocket_server
+    if websocket_server:
+        logger.info("Closing WebSocket server...")
+        websocket_server.close()
+        await websocket_server.wait_closed()
+        logger.info("WebSocket server closed")
+    
+    # Close all WebSocket connections
+    if bridge.clients:
+        logger.info(f"Closing {len(bridge.clients)} WebSocket connections...")
+        for client in bridge.clients.copy():
+            await client.close()
+        bridge.clients.clear()
+        logger.info("All WebSocket connections closed")
+    
+    logger.info("Graceful shutdown completed")
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}, initiating shutdown...")
+    # Create a new event loop for cleanup if needed
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Schedule cleanup in the running loop
+            loop.create_task(cleanup_and_shutdown())
+            # Give some time for cleanup
+            loop.call_later(2.0, lambda: sys.exit(0))
+        else:
+            # Run cleanup in a new loop
+            asyncio.run(cleanup_and_shutdown())
+            sys.exit(0)
+    except Exception as e:
+        logger.error(f"Error during signal handling: {e}")
+        sys.exit(1)
+
 # Define a function to create and run the pipeline
 async def main():
     logger.info("Starting Pipecat pipeline with Gemini function calling and WebSocket bridge...")
+    
+    # Set up signal handlers for graceful shutdown
+    if sys.platform != 'win32':
+        # Unix-like systems
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.info("Signal handlers registered for SIGINT and SIGTERM")
+    else:
+        # Windows - only SIGINT (Ctrl+C) is supported
+        signal.signal(signal.SIGINT, signal_handler)
+        logger.info("Signal handler registered for SIGINT (Ctrl+C)")
 
     # Configure Audio Transport - simple setup like previous version
     transport_params = LocalAudioTransportParams(
@@ -480,7 +513,7 @@ async def main():
     goal_functions = GoalFunctions()
     context_functions = ContextFunctions()
     utility_functions = UtilityFunctions()
-    integration_functions = IntegrationFunctions()
+
     google_workspace_functions = GoogleWorkspaceFunctions()
 
     # Create function schemas using the previous version's approach
@@ -609,24 +642,15 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
         await params.result_callback(result)
 
     # Integration function handlers with new API
-    async def handle_sync_with_trello(params: FunctionCallParams):
-        logger.info(f"=== handle_sync_with_trello called with new API ===")
-        result = await integration_functions.sync_with_trello(params.arguments.get('task_data'))
-        await params.result_callback(result)
-    
-    async def handle_sync_with_notion(params: FunctionCallParams):
-        logger.info(f"=== handle_sync_with_notion called with new API ===")
-        result = await integration_functions.sync_with_notion(params.arguments.get('goal_data'))
-        await params.result_callback(result)
     
     async def handle_create_calendar_event(params: FunctionCallParams):
         logger.info(f"=== handle_create_calendar_event called with new API ===")
-        result = await integration_functions.create_calendar_event(params.arguments.get('event_data'))
+        result = {"success": False, "message": "Calendar event creation via legacy integrations is no longer supported. Use Google Calendar integration instead."}
         await params.result_callback(result)
     
     async def handle_get_integration_status(params: FunctionCallParams):
         logger.info(f"=== handle_get_integration_status called with new API ===")
-        result = await integration_functions.get_integration_status()
+        result = {"success": True, "integrations": {"google_workspace": "active"}, "message": "Only Google Workspace integration is available"}
         await params.result_callback(result)
     
     # Google Workspace function handlers with new API
@@ -647,7 +671,7 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
                 task_name=task_name,
                 due_date=due_date, 
                 priority=priority,
-                list_name=list_name
+                list_id=list_name  # Changed from list_name to list_id
             )
             logger.info(f"Google Tasks API result: {result}")
             
@@ -741,8 +765,6 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
     gemini_service.register_function("get_current_time", handle_get_current_time)
     
     # Integration functions
-    gemini_service.register_function("sync_with_trello", handle_sync_with_trello)
-    gemini_service.register_function("sync_with_notion", handle_sync_with_notion)
     gemini_service.register_function("create_calendar_event", handle_create_calendar_event)
     gemini_service.register_function("get_integration_status", handle_get_integration_status)
     
@@ -784,7 +806,8 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
     audio_gate.enable()
     
     # Start WebSocket bridge server in the background
-    await start_websocket_bridge()
+    global websocket_server
+    websocket_server = await start_websocket_bridge()
     
     # Add transcription observer for debugging
     transcription_observer = TranscriptionLogObserver()
@@ -792,8 +815,19 @@ Keep responses brief and natural for speech. Confirm actions clearly after funct
 
     logger.info("🎙️ Voice assistant ready with function calling support!")
     logger.info("Say 'list my Google tasks' or 'create a Google task' to test function calling")
+    logger.info("Press Ctrl+C to shutdown gracefully")
     
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    except KeyboardInterrupt:
+        logger.info("Received KeyboardInterrupt, shutting down...")
+        await cleanup_and_shutdown()
+    except Exception as e:
+        logger.error(f"Pipeline error: {e}")
+        await cleanup_and_shutdown()
+        raise
+    finally:
+        await cleanup_and_shutdown()
 
 # if __name__ == "__main__":
 #     asyncio.run(main())

@@ -684,17 +684,55 @@ app.on('activate', () => {
   }
 });
 
-// Unregister shortcuts when app is quitting
-app.on('will-quit', () => {
-  logger.info('Application quitting, cleaning up');
+// Graceful shutdown function
+function gracefulShutdown(signal) {
+  logger.info(`Received ${signal}, initiating graceful shutdown...`);
+  
+  // Unregister hotkeys
   hotkeyManager.unregisterAll();
   
   // Clean up Pipecat process
   if (pipecatProcess) {
     logger.info('Terminating Pipecat process...');
     pipecatProcess.kill('SIGTERM');
-    pipecatProcess = null;
+    
+    // Wait for process to exit, then quit app
+    pipecatProcess.on('close', (code) => {
+      logger.info(`Pipecat process exited with code ${code}`);
+      pipecatProcess = null;
+      app.quit();
+    });
+    
+    // Force quit after 5 seconds if process doesn't exit
+    setTimeout(() => {
+      if (pipecatProcess) {
+        logger.warn('Force killing Pipecat process...');
+        pipecatProcess.kill('SIGKILL');
+        pipecatProcess = null;
+      }
+      app.quit();
+    }, 5000);
+  } else {
+    app.quit();
   }
+}
+
+// Handle process termination signals
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+// Unregister shortcuts when app is quitting
+app.on('will-quit', (event) => {
+  logger.info('Application quitting, cleaning up');
+  
+  // If Pipecat process is still running, prevent quit and do graceful shutdown
+  if (pipecatProcess) {
+    event.preventDefault();
+    gracefulShutdown('will-quit');
+    return;
+  }
+  
+  hotkeyManager.unregisterAll();
 });
 
 // IPC Events for Microphone Selection

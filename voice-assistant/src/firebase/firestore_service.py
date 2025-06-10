@@ -52,7 +52,8 @@ class FirestoreService:
                 logger.info(f"Document with ID '{doc_id}' added/updated in collection '{collection_name}'.")
                 return doc_id
             else:
-                doc_ref, doc_id = collection_ref.add(data)
+                doc_ref = collection_ref.add(data)[1]  # collection.add() returns (timestamp, doc_ref)
+                doc_id = doc_ref.id
                 logger.info(f"Document added to collection '{collection_name}' with ID: {doc_id}")
                 return doc_id
         except Exception as e:
@@ -156,13 +157,38 @@ class FirestoreService:
     async def create_note(self, note_data):
         return await self.add_document("notes", note_data)
     
-    async def get_notes(self, category=None):
+    async def get_notes(self, category=None, limit=None):
         query_params = None
         if category and category != "all":
             query_params = [("category", "==", category)]
         
         order_by = [("created_at", "desc")]
-        return await self.query_collection("notes", query_params, order_by)
+        return await self.query_collection("notes", query_params, order_by, limit)
+    
+    async def search_notes(self, query: str, filters: dict = None):
+        """Search notes by content with optional filters"""
+        query_params = []
+        
+        # Add filters if provided
+        if filters:
+            if "category" in filters:
+                query_params.append(("category", "==", filters["category"]))
+            if "tags" in filters:
+                query_params.append(("tags", "array-contains-any", filters["tags"]))
+        
+        # For now, we'll get all matching notes and filter by content in memory
+        # In production, you might want to use Firestore's full-text search or Algolia
+        order_by = [("created_at", "desc")]
+        all_notes = await self.query_collection("notes", query_params, order_by)
+        
+        # Filter by content (case-insensitive)
+        matching_notes = []
+        query_lower = query.lower()
+        for note in all_notes:
+            if query_lower in note.get("content", "").lower():
+                matching_notes.append(note)
+        
+        return matching_notes
     
     # User preference methods
     async def update_user_preferences(self, conversation_id, preferences):

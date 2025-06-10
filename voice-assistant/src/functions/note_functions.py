@@ -107,13 +107,8 @@ class NoteFunctions:
     async def list_notes(self, category: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
         """List recent notes with optional category filter"""
         try:
-            # Build filters
-            filters = {}
-            if category:
-                filters["category"] = category
-            
             # Get notes from Firestore
-            notes = await self.firestore.get_notes(filters, limit=limit)
+            notes = await self.firestore.get_notes(category=category, limit=limit)
             
             if not notes:
                 category_desc = f" in category '{category}'" if category else ""
